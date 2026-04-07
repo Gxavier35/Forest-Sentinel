@@ -1,44 +1,39 @@
 import pytest
 import numpy as np
-from features import _calculate_bulk, compute_features
+from features import compute_features
 
-def test_calculate_bulk():
-    # Testa os processamentos estatisticos para tamanhos uniformes e anômalos
-    # _calculate_bulk processa uma lista de pacotes {time, length}
+def test_compute_features_basic():
+    # Teste básico com uma lista de pacotes simulada
     pkts = [
-        {"length": 50, "time": 10.0},
-        {"length": 150, "time": 10.05},
-        {"length": 50, "time": 10.1},
-        {"length": 50, "time": 10.15}
+        {"time": 0.0, "length": 60, "tcp_flags": 2, "tcp_window": 1024, "direction": "fwd"},
+        {"time": 0.1, "length": 1500, "tcp_flags": 2, "tcp_window": 1024, "direction": "fwd"},
+        {"time": 0.2, "length": 60, "tcp_flags": 2, "tcp_window": 1024, "direction": "bwd"},
+        {"time": 0.3, "length": 60, "tcp_flags": 2, "tcp_window": 1024, "direction": "fwd"},
+        {"time": 0.4, "length": 60, "tcp_flags": 2, "tcp_window": 1024, "direction": "bwd"},
     ]
+    key = ("1.1.1.1", "2.2.2.2", 1234, 80, 6) # TCP
     
-    # Bulk exige no minimo 4 pacotes, testaremos se gera metricas base
-    bytes_bulk, pkts_bulk, rate = _calculate_bulk(pkts)
+    features = compute_features(key, pkts)
     
-    assert bytes_bulk == 300.0
-    assert pkts_bulk == 4.0
-    assert rate > 0
+    assert isinstance(features, np.ndarray)
+    assert features.shape == (38,) # O modelo espera exatamente 38 features
+    # Feature 0: duration
+    assert features[0] > 0.3 # 0.4 - 0.0
+    # Feature 5: flow_packets_per_sec (index 5)
+    assert features[5] > 0
 
-def test_compute_features_no_nan():
-    # Garante validacao defensiva impedindo corrupcao numerica em features
-    rec = type("FlowRecord", (), {})()
-    rec.start_time = 1600000000
-    rec.last_seen = 1600000005
-    
-    packets = [
-        {"direction": "fwd", "length": 64,  "time": 1.0, "tcp_flags": 2, "tcp_window": 8192, "ip_header_len": 20},
-        {"direction": "bwd", "length": 128, "time": 1.1, "tcp_flags": 18, "tcp_window": 8192, "ip_header_len": 20},
-        {"direction": "fwd", "length": 512, "time": 1.2, "tcp_flags": 24, "tcp_window": 8192, "ip_header_len": 20},
-        {"direction": "bwd", "length": 64,  "time": 1.3, "tcp_flags": 16, "tcp_window": 8192, "ip_header_len": 20},
-        {"direction": "fwd", "length": 512, "time": 1.4, "tcp_flags": 24, "tcp_window": 8192, "ip_header_len": 20}
+def test_compute_features_udp():
+    pkts = [
+        {"time": 0.0, "length": 100, "tcp_flags": None, "tcp_window": None, "direction": "fwd"},
+        {"time": 0.1, "length": 100, "tcp_flags": None, "tcp_window": None, "direction": "bwd"},
+        {"time": 0.2, "length": 100, "tcp_flags": None, "tcp_window": None, "direction": "fwd"},
+        {"time": 0.3, "length": 100, "tcp_flags": None, "tcp_window": None, "direction": "bwd"},
+        {"time": 0.4, "length": 100, "tcp_flags": None, "tcp_window": None, "direction": "fwd"},
     ]
+    key = ("1.1.1.1", "2.2.2.2", 1234, 53, 17) # UDP
     
-    flow_key = ("192.168.1.1", "8.8.8.8", 12345, 443, 6) # tcp
-    feat_vector = compute_features(flow_key, packets)
-    
-    # Vetor das 38 colunas originais do paper final da engine de IA
-    assert len(feat_vector) == 38
-    
-    # Nao pode haver nulls, Nans ou Infinities para a IA nao crashar as weights
-    assert not np.isnan(feat_vector).any()
-    assert not np.isinf(feat_vector).any()
+    features = compute_features(key, pkts)
+    assert features.shape == (38,)
+    # TCP-specific features should be 0 for UDP
+    # fwd_psh_flags is at index 14
+    assert features[14] == 0

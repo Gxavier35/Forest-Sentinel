@@ -44,87 +44,41 @@ class WindowsFirewall(BaseFirewall):
 
     def block(self, ip: str) -> bool:
         if not is_valid_ip(ip):
-            self.logger.critical(
-                f"Tentativa de Command Injection prevenida. IP Invalido: {ip}"
-            )
+            self.logger.critical(f"Tentativa de Command Injection prevenida. IP Invalido: {ip}")
             return False
 
-        # Sanitização reforçada (previne qualquer injection baseada na string original)
+        if ip in self._tracked_ips:
+            return True
+
         ip = str(ipaddress.ip_address(ip))
         rule_name = f"DDoS_Block_{ip}"
+        
         try:
-            res = subprocess.run(
-                [
-                    "netsh",
-                    "advfirewall",
-                    "firewall",
-                    "show",
-                    "rule",
-                    f"name={rule_name}",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if res.returncode != 0:
-                cmd = [
-                    "netsh",
-                    "advfirewall",
-                    "firewall",
-                    "add",
-                    "rule",
-                    f"name={rule_name}",
-                    "dir=in",
-                    "action=block",
-                    f"remoteip={ip}",
-                    "enable=yes",
-                    "profile=any",
-                    "interfacetype=any",
-                    "description=ForestSentinel Active Block",
-                ]
-                add_res = subprocess.run(cmd, capture_output=True, text=True)
-                if add_res.returncode == 0:
-                    # Verificação extra: confirma se a regra aparece no sistema
-                    verify = subprocess.run(
-                        [
-                            "netsh",
-                            "advfirewall",
-                            "firewall",
-                            "show",
-                            "rule",
-                            f"name={rule_name}",
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if "name:" in verify.stdout.lower() or rule_name in verify.stdout:
-                        self.logger.warning(f"🛡️ Bloqueio CONFIRMADO via netsh: {ip}")
-                        self._tracked_ips.add(ip)
-                        return True
-                    else:
-                        self.logger.error(
-                            f"⚠️ netsh reportou sucesso, mas regra para {ip} não foi encontrada na verificação."
-                        )
-                        return False
-                else:
-                    opt_stdout = add_res.stdout.lower()
-                    if (
-                        "access is denied" in opt_stdout
-                        or "acesso negado" in opt_stdout
-                    ):
-                        self.logger.error(
-                            f"Permissão negada ao bloquear {ip}. Execute como Administrador."
-                        )
-                    else:
-                        self.logger.error(
-                            f"Erro do netsh ao bloquear {ip}: {add_res.stdout.strip()}"
-                        )
-                    return False
-            else:
-                self.logger.info(
-                    f"Regra já existe para {ip}, ignorando duplicata de bloqueio."
-                )
+            # Tentamos adicionar a regra diretamente (mais rápido que show + add)
+            cmd = [
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={rule_name}", "dir=in", "action=block",
+                f"remoteip={ip}", "enable=yes", "profile=any",
+                "interfacetype=any", "description=ForestSentinel Active Block",
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if res.returncode == 0:
+                self.logger.warning(f"🛡️ Bloqueio EFETIVADO via netsh: {ip}")
                 self._tracked_ips.add(ip)
                 return True
+            else:
+                out = res.stdout.lower()
+                # Se a regra já existir, apenas consideramos sucesso e rastreamos
+                if "already exists" in out or "já existe" in out:
+                    self._tracked_ips.add(ip)
+                    return True
+                
+                if "access is denied" in out or "acesso negado" in out:
+                    self.logger.error(f"Permissão negada ao bloquear {ip}. Execute como Administrador.")
+                else:
+                    self.logger.error(f"Erro netsh ao bloquear {ip}: {res.stdout.strip()}")
+                return False
         except Exception as e:
             self.logger.error(f"Exceção severa ao bloquear fluxo IP {ip}: {e}")
         return False
@@ -183,7 +137,9 @@ class LinuxFirewall(BaseFirewall):
     def _setup_nft(self):
         try:
             check = subprocess.run(
-                ["nft", "list", "table", "ip", "ddos_monitor"], capture_output=True
+                ["nft", "list", "table", "ip", "ddos_monitor"],
+                capture_output=True,
+                text=True,
             )
             if check.returncode != 0:
                 subprocess.run(
@@ -256,11 +212,15 @@ class LinuxFirewall(BaseFirewall):
                 f"❌ Erro de permissão: Execute como root/sudo para bloquear {ip}"
             )
             return False
+        success = False
         if self.has_nft:
-            return self._block_nft(ip)
-        elif self.has_ipt:
-            return self._block_ipt(ip)
-        return False
+            success = self._block_nft(ip)
+        
+        # Fallback para iptables caso nftables falhe ou não esteja disponível
+        if not success and self.has_ipt:
+            success = self._block_ipt(ip)
+            
+        return success
 
     def _block_nft(self, ip: str) -> bool:
         try:
@@ -355,10 +315,15 @@ class LinuxFirewall(BaseFirewall):
             )
             return
         if self.has_nft:
-            subprocess.run(
-                ["nft", "flush", "set", "ip", "ddos_monitor", "blackhole"],
-                capture_output=True,
-            )
+            try:
+                subprocess.run(
+                    ["nft", "flush", "set", "ip", "ddos_monitor", "blackhole"],
+                    capture_output=True,
+                    check=True,
+                )
+                self.logger.info("NFTables: Set de bloqueio limpo com sucesso.")
+            except Exception as e:
+                self.logger.error(f"Erro ao limpar set NFTables: {e}")
             self._tracked_ips.clear()
             return
         for ip in list(self._tracked_ips):

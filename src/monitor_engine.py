@@ -16,7 +16,8 @@ import traceback
 import multiprocessing as mp
 from datetime import datetime
 
-from PyQt6.QtCore import QObject, pyqtSignal
+import queue
+from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
 import numpy as np
 
@@ -31,7 +32,7 @@ from utils import get_root_dir
 from firewall import get_firewall_manager
 
 # --- Gerenciadores de Estado --- #
-from constants import DetectionStatus, format_flow_key
+from constants import DetectionStatus
 from flow_manager import FlowManager
 from attack_manager import AttackStateManager
 
@@ -83,7 +84,6 @@ class MonitorEngine(QObject):
     Orquestrador. Instancia FlowManager e AttackStateManager.
     """
 
-    flow_updated = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
     status_changed = pyqtSignal(str)
     pps_updated = pyqtSignal(float)
@@ -111,6 +111,7 @@ class MonitorEngine(QObject):
         self.sniffer = None
         self._running = False
         self._analyze_thread = None
+        self._sniffer_thread = None
 
         self._last_pps_chk = time.time()
         self._baseline_pps = 0.0
@@ -137,6 +138,13 @@ class MonitorEngine(QObject):
         # Injeção de dependência dos Managers
         self.flow_manager = FlowManager()
         self.attack_manager = AttackStateManager()
+
+        # Fila de firewall para evitar thread explosion
+        self._block_queue = queue.Queue()
+        self._firewall_thread = threading.Thread(
+            target=self._firewall_worker, daemon=True
+        )
+        self._firewall_thread.start()
 
     def is_running(self) -> bool:
         return self._running
@@ -188,6 +196,19 @@ class MonitorEngine(QObject):
         }
 
     # --- Rotinas do Firewall ---
+
+    def _firewall_worker(self):
+        """Thread dedicada para processar bloqueios de forma serializada."""
+        while True:
+            try:
+                task = self._block_queue.get()
+                if task == "STOP":
+                    break
+                ip, pps = task
+                self.block_ip(ip, pps)
+                self._block_queue.task_done()
+            except Exception as e:
+                self.logger.error(f"Erro no firewall worker: {e}")
 
     def block_ip(self, src_ip: str, pkts_per_sec: float) -> bool:
         if self.attack_manager.is_block_pending_or_active(src_ip):
@@ -250,8 +271,11 @@ class MonitorEngine(QObject):
         return ok
 
     def _start_ai_process(self):
+        # Reinicia se o processo não existir ou não estiver vivo
         if self._ai_proc and self._ai_proc.is_alive():
             return
+
+        self.logger.info("📦 Motor de IA: Iniciando processo worker...")
         self._ai_proc = mp.Process(
             target=_ai_inference_worker,
             args=(self._in_q, self._out_q, MODEL_PATH, SCALER_PATH),
@@ -259,7 +283,6 @@ class MonitorEngine(QObject):
         )
         self._ai_proc.start()
         self._last_ai_restart = time.time()
-        self.logger.info("Processo IA iniciado.")
 
     # --- Ciclo de Vida do Orquestrador Principal ---
 
@@ -292,9 +315,11 @@ class MonitorEngine(QObject):
             )
             self._analyze_thread.start()
 
-        threading.Thread(
-            target=self._sniffer_supervisor, args=(iface,), daemon=True
-        ).start()
+        if self._sniffer_thread is None or not self._sniffer_thread.is_alive():
+            self._sniffer_thread = threading.Thread(
+                target=self._sniffer_supervisor, args=(iface,), daemon=True
+            )
+            self._sniffer_thread.start()
 
         return True
 
@@ -349,6 +374,9 @@ class MonitorEngine(QObject):
 
         if self._analyze_thread and self._analyze_thread.is_alive():
             self._analyze_thread.join(timeout=2.0)
+            
+        if self._sniffer_thread and self._sniffer_thread.is_alive():
+            self._sniffer_thread.join(timeout=2.0)
 
         self.attack_manager.clear_blocked_states()
         self.status_changed.emit("🛑 Monitoramento interrompido.")
@@ -360,11 +388,11 @@ class MonitorEngine(QObject):
             try:
                 time.sleep(1)
 
-                snapshot_count = self.flow_manager.get_and_reset_pkt_count()
+                snapshot_count, last_reset = self.flow_manager.get_and_reset_pkt_count()
                 now = time.time()
-                elapsed = now - self._last_pps_chk
-                self._last_pps_chk = now
-
+                elapsed = now - last_reset
+                
+                # Garante um tempo mínimo para evitar divisão por zero ou PPS irreal
                 pps = snapshot_count / max(elapsed, 0.001)
                 self.pps_updated.emit(float(pps))
 
@@ -423,14 +451,11 @@ class MonitorEngine(QObject):
             flow_work_list, self._auto_block_enabled
         )
 
-        # Sincroniza tracking: IPs que não estão mais ativos são removidos da análise de estado contínua
-        active_flow_ips = [fk[0] for fk, _, _, _, _, _ in flow_work_list]
-        self.attack_manager.get_stale_from_tracking(active_flow_ips)
-
         # 5. Despachar Eventos e Ações Corretivas
         for ip, pps in to_block:
             self.block_requested.emit(ip, pps)
-            threading.Thread(target=self.block_ip, args=(ip, pps), daemon=True).start()
+            # Enfileira para o worker em vez de criar uma thread por IP
+            self._block_queue.put((ip, pps))
 
         for ip, (lbl, conf) in to_log.items():
             self.attack_started.emit(ip, lbl.name)
@@ -439,6 +464,10 @@ class MonitorEngine(QObject):
             self.attack_normalized.emit(
                 {"src_ip": ip, "time": datetime.now().strftime("%H:%M:%S")}
             )
+
+        # Sincroniza tracking de IPs ativos de forma robusta
+        active_flow_ips = [fk[0] for fk, rec, pkts_snap, ls, la, lr in flow_work_list]
+        self.attack_manager.get_stale_from_tracking(active_flow_ips)
 
         total_active = len(ui_results)
         total_attacks = 0
@@ -456,59 +485,48 @@ class MonitorEngine(QObject):
     def _predict_batch(
         self, feats_list: list[np.ndarray]
     ) -> list[tuple["DetectionStatus", float, bool]]:
-        """Gerencia as filas do processo da IA assíncrona implementando repetições controladas (retries)."""
+        """Gerencia as filas do processo da IA assíncrona com isolamento por req_id."""
         if not feats_list:
             return []
 
-        # CÃO DE GUARDA (Watchdog)
+        # Watchdog: Se o processo morreu, reinicia imediatamente
         if not self._ai_proc or not self._ai_proc.is_alive():
-            now = time.time()
-            if (now - self._last_ai_restart) > 5.0:
-                self.logger.warning("📦 AI Watchdog: Reiniciando motor de IA...")
-                self._start_ai_process()
-            else:
-                return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)
+            self._start_ai_process()
+            # Pequena pausa para o processo carregar o modelo no primeiro arranque
+            time.sleep(0.5)
 
         try:
             req_id = time.time_ns()
             threshold = self._ai_thresholds.get(self._profile, -0.15)
             feats_combined = np.array(feats_list)
 
-            # Drenar lixo da fila em caso de timeout de execuções anteriores
-            while not self._out_q.empty():
-                try:
-                    self._out_q.get_nowait()
-                except Exception:
-                    break
-
+            # Envia requisição
             self._in_q.put((req_id, feats_combined, threshold))
 
-            for attempt in range(3):
+            # Aguarda pela resposta correspondente ao ID atual
+            # Retries para o caso de mensagens de timeout anteriores estarem na frente
+            for _ in range(5): 
                 try:
-                    resp_id, status, data = self._out_q.get(timeout=1.0)
+                    resp_id, status, data = self._out_q.get(timeout=1.5)
+                    
                     if resp_id != req_id:
-                        continue  # descarta resposta desatualizada
+                        self.logger.debug(f"IA: Ignorando resposta antiga {resp_id}")
+                        continue  # Descarta resposta de requisição anterior (stale)
 
                     if status == "OK":
                         if len(data) != len(feats_list):
-                            self.logger.error(
-                                "Dessincronização IA: a resposta tem tamanho diferente do envio."
-                            )
-                            return [(DetectionStatus.ERROR, 0.0, False)] * len(
-                                feats_list
-                            )
+                            self.logger.error("Dessincronização IA: tamanho da resposta inválido.")
+                            return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)
                         return data
                     else:
                         self.logger.error(f"Erro no worker IA: {data}")
                         break
-                except Exception:
-                    continue
+                except queue.Empty:
+                    continue  # Tenta novamente até o limite de retries
 
-            self.logger.warning(
-                "Descarte total: IA sobrecarregada falhou após 3 retries."
-            )
+            self.logger.warning("IA: Timeout ou erro após retitativas.")
             return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)
 
         except Exception as e:
-            self.logger.error(f"Erro ao enviar para worker IA: {e}")
+            self.logger.error(f"Erro fatal na comunicação com worker IA: {e}")
             return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)

@@ -9,6 +9,7 @@ import time
 import collections
 import threading
 import itertools
+import logging
 
 import numpy as np
 from constants import (
@@ -48,18 +49,23 @@ class FlowManager:
     _MULTICAST_PREFIXES_V6 = ("ff00::",)
 
     def __init__(self):
-        self._flows: dict[tuple, FlowRecord] = {}
+        # Usamos OrderedDict para manter a ordem LRU (Least Recently Used) de forma eficiente
+        self._flows: collections.OrderedDict[tuple, FlowRecord] = collections.OrderedDict()
         self._lock = threading.RLock()
 
         # Estatísticas de pacote bruto capturado na callback
         self._pkt_count = 0
+        self._last_pkt_reset = time.time()
         self._pkt_lock = threading.Lock()
+        self.logger = logging.getLogger("FlowManager")
 
-    def get_and_reset_pkt_count(self) -> int:
+    def get_and_reset_pkt_count(self) -> tuple[int, float]:
         with self._pkt_lock:
             c = self._pkt_count
+            t = self._last_pkt_reset
             self._pkt_count = 0
-            return c
+            self._last_pkt_reset = time.time()
+            return c, t
 
     def clear(self):
         with self._lock:
@@ -112,23 +118,19 @@ class FlowManager:
             with self._lock:
                 if key in self._flows:
                     direction, flow_key = "fwd", key
+                    self._flows.move_to_end(key)  # Marca como mais recente
                 elif rev in self._flows:
                     direction, flow_key = "bwd", rev
+                    self._flows.move_to_end(rev)  # Marca como mais recente
                 else:
                     direction, flow_key = "fwd", key
 
                     if len(self._flows) >= MAX_FLOWS:
-                        # Otimização em lote: limpeza rápida sob estresse/DDoS
+                        # Expulsão LRU O(1): remove os 50 itens mais antigos instantaneamente
                         try:
-                            oldest_created = list(
-                                itertools.islice(self._flows.keys(), 100)
-                            )
-                            oldest_created.sort(
-                                key=lambda k: self._flows.get(k, self).last_seen
-                            )
-                            for k in oldest_created[:50]:
-                                self._flows.pop(k, None)
-                        except Exception:
+                            for _ in range(50):
+                                self._flows.popitem(last=False)
+                        except (Exception, KeyError):
                             pass
 
                     self._flows[flow_key] = FlowRecord()
@@ -143,8 +145,8 @@ class FlowManager:
                         "direction": direction,
                     }
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Pkt process error: {e}")
 
     def cleanup_memory(self):
         """Remove fluxos obsoletos a mais de FLOW_TIMEOUT sem interação."""
@@ -172,11 +174,13 @@ class FlowManager:
                 if (now - rec.last_seen) > FLOW_TIMEOUT:
                     expired.append(fk)
                 else:
+                    # Passamos a deque original. A conversão para list() será retardada (Lazy Copy)
+                    # para evitar alocações de memória massivas e desnecessárias.
                     flow_work_list.append(
                         (
                             fk,
                             rec,
-                            list(rec.packets),
+                            rec.packets, # Referência direta à deque
                             rec.last_seen,
                             rec.last_analyzed,
                             rec.last_result,
@@ -208,7 +212,9 @@ class FlowManager:
 
         to_analyze_keys = []
         to_analyze_feats = []
-        for fk, rec, pkts_snap in need_analysis:
+        for fk, rec, pkts_deque in need_analysis:
+            # Sincronização Final: Converte para lista apenas para o subset que SERÁ analisado
+            pkts_snap = list(pkts_deque)
             feats = compute_features(fk, pkts_snap)
             if feats is not None:
                 to_analyze_keys.append(fk)

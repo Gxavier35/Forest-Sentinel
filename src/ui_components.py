@@ -5,11 +5,11 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QFrame,
-    QGraphicsDropShadowEffect,
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QPointF
 from PyQt6.QtGui import QColor, QLinearGradient, QGradient, QPainter, QBrush, QPen
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis, QAreaSeries
+from i18n import tr
 
 COLORS = {
     "bg_deep": "#05070C",  # Deep Space
@@ -27,15 +27,99 @@ COLORS = {
     "chart_att": "#FF3366",
 }
 
+# --- Estilos QSS Globais Consolidados --- #
+
+QSS_GROUPBOX = f"""
+    QGroupBox {{
+        color: {COLORS['text_dim']};
+        font-size: 12px;
+        font-weight: 600;
+        border: 1px solid {COLORS['border']};
+        border-radius: 8px;
+        margin-top: 8px;
+        padding-top: 8px;
+    }}
+    QGroupBox::title {{
+        subcontrol-origin: margin;
+        left: 12px;
+        padding: 0 6px;
+    }}
+"""
+
+
+def QSS_BUTTON(hover_color=COLORS["accent"]):
+    return f"""
+        QPushButton {{
+            background-color: {COLORS['bg_card']};
+            color: {COLORS['text_dim']};
+            border: 1px solid {COLORS['border']};
+            padding: 8px 16px;
+            border-radius: 10px;
+            font-weight: 600;
+        }}
+        QPushButton:hover {{
+            background-color: {COLORS['bg_panel']};
+            color: {COLORS['text']};
+            border: 1px solid {hover_color};
+        }}
+        QPushButton:disabled {{
+            color: {COLORS['text_dim']}55;
+            background-color: transparent;
+        }}
+    """
+
+
+QSS_INPUT = f"""
+    QLineEdit {{
+        background: {COLORS['bg_deep']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 8px;
+        padding: 8px;
+        color: {COLORS['text']};
+    }}
+    QLineEdit:focus {{
+        border: 1px solid {COLORS['accent']};
+    }}
+"""
+
+QSS_LIST = f"""
+    QListWidget {{
+        background: {COLORS['bg_deep']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 8px;
+        color: {COLORS['text']};
+        padding: 5px;
+    }}
+"""
+
+QSS_COMBO = f"""
+    QComboBox {{
+        background: {COLORS['bg_deep']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 8px;
+        padding: 5px 10px;
+        color: {COLORS['text']};
+    }}
+    QComboBox::drop-down {{
+        border: 0px;
+        padding-right: 10px;
+    }}
+    QComboBox QAbstractItemView {{
+        background: {COLORS['bg_card']};
+        color: {COLORS['text']};
+        selection-background-color: {COLORS['accent']};
+        border: 1px solid {COLORS['border']};
+    }}
+"""
+
 
 class MetricCard(QFrame):
     def __init__(self, title, value="0", unit="", color=COLORS["accent"], parent=None):
         super().__init__(parent)
         self.color = color
         self.setFixedHeight(110)
-        self.setObjectName("MetricCard")
         self.setStyleSheet(f"""
-            #MetricCard {{
+            MetricCard {{
                 background: transparent;
                 border: 1px solid {COLORS['border']};
                 border-radius: 8px;
@@ -94,14 +178,14 @@ class ActivityChart(QWidget):
         self._chart.layout().setContentsMargins(0, 0, 0, 0)
 
         self._series_normal = QLineSeries()
-        self._series_normal.setName("Normal")
+        self._series_normal.setName(tr("chart_normal"))
         pen = self._series_normal.pen()
         pen.setColor(QColor(COLORS["chart_fwd"]))
         pen.setWidth(2)
         self._series_normal.setPen(pen)
 
         self._series_attack = QLineSeries()
-        self._series_attack.setName("Ataque")
+        self._series_attack.setName(tr("chart_attack"))
         pen2 = self._series_attack.pen()
         pen2.setColor(QColor(COLORS["chart_att"]))
         pen2.setWidth(2)
@@ -138,7 +222,7 @@ class ActivityChart(QWidget):
         self._axis_y.setRange(0, 10)
         self._axis_y.setLabelsColor(QColor(COLORS["text_dim"]))
         self._axis_y.setGridLineColor(QColor(COLORS["border"]))
-        self._axis_y.setTitleText("Fluxos/s")
+        self._axis_y.setTitleText(tr("chart_axis_y"))
         self._axis_y.setTitleBrush(QBrush(QColor(COLORS["text_dim"])))
 
         self._chart.addAxis(self._axis_x, Qt.AlignmentFlag.AlignBottom)
@@ -153,13 +237,17 @@ class ActivityChart(QWidget):
         self._normal_data.append(normal_count)
         self._attack_data.append(attack_count)
 
-        self._series_normal.clear()
-        self._series_attack.clear()
         start = max(0, self._t - self.MAX_POINTS)
+        
+        pts_normal = []
+        pts_attack = []
         for i, (n, a) in enumerate(zip(self._normal_data, self._attack_data)):
             x = start + i
-            self._series_normal.append(x, n)
-            self._series_attack.append(x, a)
+            pts_normal.append(QPointF(x, n))
+            pts_attack.append(QPointF(x, a))
+
+        self._series_normal.replace(pts_normal)
+        self._series_attack.replace(pts_attack)
 
         mx = max(
             max(self._normal_data, default=0), max(self._attack_data, default=0), 10
@@ -167,24 +255,34 @@ class ActivityChart(QWidget):
         self._axis_y.setRange(0, mx * 1.2)
         self._axis_x.setRange(start, start + self.MAX_POINTS)
 
+    def apply_language(self):
+        """Atualiza nomes das séries e eixo do gráfico quando o idioma muda."""
+        self._series_normal.setName(tr("chart_normal"))
+        self._series_attack.setName(tr("chart_attack"))
+        self._axis_y.setTitleText(tr("chart_axis_y"))
+
 
 class AlertBanner(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("AlertBanner")
+        self.setProperty("active", False)
+        self.setProperty("blink", False)
         self._visible = False
         self._alpha = 0
         self.hide()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
-            #AlertBanner {{
+            AlertBanner {{
+                border-radius: 4px;
+                border: 1px solid transparent;
+            }}
+            AlertBanner[active="true"] {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
                     stop:0 {COLORS['danger']}, stop:0.02 {COLORS['danger']}, 
                     stop:0.021 {COLORS['bg_panel']}, stop:1 {COLORS['bg_panel']});
                 border: 1px solid {COLORS['border']};
-                border-radius: 4px;
             }}
-            #AlertBanner[blink="true"] {{
+            AlertBanner[active="true"][blink="true"] {{
                 background: {COLORS['danger']}AA;
                 border: 1px solid {COLORS['danger']};
                 border-radius: 10px;
@@ -199,7 +297,7 @@ class AlertBanner(QFrame):
         icon_lbl = QLabel("🚨")
         icon_lbl.setStyleSheet("font-size: 20px;")
 
-        self._text_lbl = QLabel("ATAQUE DDOS DETECTADO")
+        self._text_lbl = QLabel(tr("alert_default"))
         self._text_lbl.setStyleSheet(f"""
             color: #FFFFFF;
             margin: 0px;
@@ -236,16 +334,22 @@ class AlertBanner(QFrame):
             self._sub_lbl.setText(subtitle.strip())
         else:
             self._sub_lbl.setText(msg)
-        self.show()
+        self.setProperty("active", True)
         self._blink_timer.start(400)
         self._auto_hide_timer.start(duration_ms)
         self._visible = True
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def hide_alert(self):
         self._blink_timer.stop()
         self._auto_hide_timer.stop()
+        self.setProperty("active", False)
+        self.setProperty("blink", False)
         self.hide()
         self._visible = False
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def _blink(self):
         self._blink_state = not self._blink_state

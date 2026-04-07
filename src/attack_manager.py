@@ -11,7 +11,7 @@ import threading
 from datetime import datetime
 import os
 import logging
-from utils import get_root_dir
+from utils import get_root_dir, get_timestamp, get_proto_name, format_flow_key
 from constants import (
     DetectionStatus,
     LEVEL1_SECS,
@@ -19,7 +19,6 @@ from constants import (
     BLOCK_PERSIST_SECS,
     NORMALIZE_SECS,
     FlowResult,
-    format_flow_key,
 )
 
 WHITELIST_FILE = os.path.join(get_root_dir(), "config", "whitelist.txt")
@@ -181,7 +180,7 @@ class AttackStateManager:
                 lr_fresh if lr_fresh else (DetectionStatus.NORMAL, 0.0, False)
             )
             src_ip, dst_ip, src_port, dst_port, proto = fk
-            proto_name = {6: "TCP", 17: "UDP"}.get(proto, str(proto))
+            proto_name = get_proto_name(proto)
 
             if self.is_whitelisted(src_ip):
                 is_attack, label = False, DetectionStatus.NORMAL
@@ -219,7 +218,7 @@ class AttackStateManager:
                     pkts=len(pkts_snap),
                     duration=dur_secs,
                     proto=proto_name,
-                    time=datetime.now().strftime("%H:%M:%S"),
+                    time=get_timestamp(),
                 )
             )
 
@@ -268,7 +267,7 @@ class AttackStateManager:
 
     def confirm_block(self, src_ip: str, pps: float) -> str:
         with self._lock:
-            ts = datetime.now().strftime("%H:%M:%S")
+            ts = get_timestamp()
             self._blocked_status[src_ip] = {
                 "pps": pps,
                 "time": ts,
@@ -296,8 +295,12 @@ class AttackStateManager:
             return dict(self._blocked_status)
 
     def get_stale_from_tracking(self, active_flow_ips) -> list:
+        """Limpa o tracking de IPs que não possuem mais fluxos ativos."""
         with self._lock:
-            stale = [ip for ip in self._attack_persist if ip not in active_flow_ips]
+            # Otimização: Converter para set para busca O(1)
+            active_set = set(active_flow_ips)
+            stale = [ip for ip in self._attack_persist if ip not in active_set]
             for ip in stale:
                 self._attack_persist.pop(ip, None)
+                self._last_seen_attack.pop(ip, None) # Limpar também last_seen
             return stale

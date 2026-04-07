@@ -10,6 +10,10 @@ from dataclasses import dataclass
 
 @dataclass
 class FlowResult:
+    __slots__ = (
+        "flow_tuple", "flow_key", "src_ip", "label", "is_attack", 
+        "confidence", "pkts", "duration", "proto", "time"
+    )
     flow_tuple: tuple
     flow_key: str
     src_ip: str
@@ -43,10 +47,3 @@ LEVEL1_SECS = 30.0  # ANALISANDO (Amarelo)
 LEVEL2_SECS = 60.0  # POSSÍVEL ATAQUE (Vermelho)
 BLOCK_PERSIST_SECS = 90.0  # Tempo retido como ofensor antes de bloqueio auto
 NORMALIZE_SECS = 30.0  # Tempo inativo sem labels de ataque para ser perdoado
-
-
-def format_flow_key(flow_tuple: tuple) -> str:
-    """Formata uma tupla flow_key (src_ip, dst_ip, src_port, dst_port, proto) em string visual."""
-    src_ip, dst_ip, src_port, dst_port, proto = flow_tuple
-    proto_name = {6: "TCP", 17: "UDP"}.get(proto, str(proto))
-    return f"{src_ip}:{src_port} → {dst_ip}:{dst_port} [{proto_name}]"

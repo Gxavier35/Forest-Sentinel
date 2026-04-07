@@ -5,48 +5,7 @@ Calcula as 38 features de fluxo de rede para o modelo DDoS.
 """
 
 import numpy as np
-
-FEATURE_NAMES = [
-    "Flow Duration",
-    "Fwd Packet Length Max",
-    "Fwd Packet Length Min",
-    "Bwd Packet Length Min",
-    "Flow Bytes/s",
-    "Flow Packets/s",
-    "Fwd IAT Min",
-    "Bwd IAT Min",
-    "Bwd PSH Flags",
-    "Fwd URG Flags",
-    "Bwd URG Flags",
-    "Bwd Header Length",
-    "Bwd Packets/s",
-    "Min Packet Length",
-    "Packet Length Variance",
-    "FIN Flag Count",
-    "SYN Flag Count",
-    "RST Flag Count",
-    "PSH Flag Count",
-    "ACK Flag Count",
-    "URG Flag Count",
-    "CWE Flag Count",  # nome usado no treinamento (o bit é CWR, mas o dataset usou CWE)
-    "ECE Flag Count",
-    "Down/Up Ratio",
-    "Fwd Header Length.1",
-    "Fwd Avg Bytes/Bulk",
-    "Fwd Avg Packets/Bulk",
-    "Fwd Avg Bulk Rate",
-    "Bwd Avg Bytes/Bulk",
-    "Bwd Avg Packets/Bulk",
-    "Bwd Avg Bulk Rate",
-    "Subflow Fwd Bytes",
-    "Init_Win_bytes_forward",
-    "Init_Win_bytes_backward",
-    "Active Std",
-    "Active Max",
-    "Idle Std",
-    "Inbound",
-]
-
+from utils import is_private_ip
 
 def _tcp_flags(pkt_flags):
     """Retorna dict com flags TCP."""
@@ -76,52 +35,36 @@ def _tcp_flags(pkt_flags):
 
 def _calculate_bulk(packets, threshold=0.1):
     """
-    Calcula as médias de Bulk para uma direção.
-    Bulk = pelo menos 4 pacotes com IAT < threshold (padrão: 100ms).
+    Calcula as médias de Bulk para uma direção seguindo o padrão CICFlowMeter.
+    Um Bulk é definido por uma rajada de 4+ pacotes onde cada intervalo < threshold.
     """
     if len(packets) < 4:
         return 0.0, 0.0, 0.0
 
-    bulk_count = 0
-    total_bulk_bytes = 0
-    total_bulk_packets = 0
-    total_bulk_duration = 0.0
-
-    current_bulk = []
-
-    for i in range(len(packets)):
-        p = packets[i]
-        if i == 0:
-            current_bulk.append(p)
-            continue
-
-        iat = p["time"] - packets[i - 1]["time"]
+    bulks = []
+    current_bulk = [packets[0]]
+    for i in range(1, len(packets)):
+        iat = packets[i]["time"] - packets[i-1]["time"]
         if iat < threshold:
-            current_bulk.append(p)
+            current_bulk.append(packets[i])
         else:
             if len(current_bulk) >= 4:
-                bulk_count += 1
-                total_bulk_packets += len(current_bulk)
-                total_bulk_bytes += sum(pk["length"] for pk in current_bulk)
-                duration = current_bulk[-1]["time"] - current_bulk[0]["time"]
-                total_bulk_duration += max(0.000001, duration)
-            current_bulk = [p]
-
+                bulks.append(current_bulk)
+            current_bulk = [packets[i]]
+    
     if len(current_bulk) >= 4:
-        bulk_count += 1
-        total_bulk_packets += len(current_bulk)
-        total_bulk_bytes += sum(pk["length"] for pk in current_bulk)
-        duration = current_bulk[-1]["time"] - current_bulk[0]["time"]
-        total_bulk_duration += max(0.000001, duration)
+        bulks.append(current_bulk)
 
-    if bulk_count == 0:
+    if not bulks:
         return 0.0, 0.0, 0.0
 
-    avg_bytes_bulk = total_bulk_bytes / bulk_count
-    avg_pkts_bulk = total_bulk_packets / bulk_count
-    avg_bulk_rate = (
-        total_bulk_bytes / total_bulk_duration if total_bulk_duration > 0 else 0.0
-    )
+    total_bulk_bytes = sum(sum(p["length"] for p in b) for b in bulks)
+    total_bulk_pkts = sum(len(b) for b in bulks)
+    total_bulk_dur = sum(b[-1]["time"] - b[0]["time"] for b in bulks)
+
+    avg_bytes_bulk = total_bulk_bytes / len(bulks)
+    avg_pkts_bulk = total_bulk_pkts / len(bulks)
+    avg_bulk_rate = total_bulk_bytes / max(1e-6, total_bulk_dur)
 
     return float(avg_bytes_bulk), float(avg_pkts_bulk), float(avg_bulk_rate)
 
@@ -200,7 +143,14 @@ def compute_features(flow_key, packets):
 
     fwd_iat = np.diff(fwd_times) if len(fwd) > 1 else np.array([0.0])
     bwd_iat = np.diff(bwd_times) if len(bwd) > 1 else np.array([0.0])
+    flow_iat = np.diff(times) if len(packets) > 1 else np.array([0.0])
 
+    fwd_iat_total = float(fwd_times[-1] - fwd_times[0]) if len(fwd) > 1 else 0.0
+    bwd_iat_total = float(bwd_times[-1] - bwd_times[0]) if len(bwd) > 1 else 0.0
+    
+    flow_iat_mean = float(np.mean(flow_iat))
+    flow_iat_std = float(np.std(flow_iat))
+    
     fwd_iat_min = float(fwd_iat.min()) if len(fwd_iat) > 0 else 0.0
     bwd_iat_min = float(bwd_iat.min()) if len(bwd_iat) > 0 else 0.0
 
@@ -281,7 +231,13 @@ def compute_features(flow_key, packets):
     active_max = float(np.max(active_times))
     idle_std = float(np.std(idle_times))
 
-    inbound = 0.0  # campo is_inbound descontinuado
+    # Feature 38: Inbound. Calculado baseando-se no destino do fluxo
+    # se o destino eh interno e origem externa, inbound=1.0
+    src_ip, dst_ip, *_ = flow_key
+    src_local = is_private_ip(src_ip)
+    dst_local = is_private_ip(dst_ip)
+    
+    inbound = 1.0 if (not src_local and dst_local) else 0.0
 
     features = np.array(
         [
@@ -291,11 +247,11 @@ def compute_features(flow_key, packets):
             bwd_pkt_min,  # 4
             flow_bytes_s,  # 5
             flow_pkts_s,  # 6
-            fwd_iat_min,  # 7
-            bwd_iat_min,  # 8
-            float(bwd_psh),  # 9
-            float(fwd_urg),  # 10
-            float(bwd_urg),  # 11
+            fwd_iat_min,   # 7
+            bwd_iat_min,   # 8
+            float(bwd_psh),# 9
+            float(fwd_urg),# 10
+            float(bwd_urg),# 11
             float(bwd_header_len),  # 12
             bwd_pkts_s,  # 13
             min_pkt_length,  # 14
@@ -329,5 +285,6 @@ def compute_features(flow_key, packets):
         dtype=np.float64,
     )
 
-    features = np.nan_to_num(features, nan=0.0, posinf=1e9, neginf=-1e9)
+    # Clipping e Normalização final (Isolation Forest é sensível a escala massiva)
+    features = np.nan_to_num(features, nan=0.0, posinf=1e6, neginf=-1e6)
     return features
