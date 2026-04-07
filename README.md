@@ -123,14 +123,23 @@ These values are defined in `constants.py` and ensure system stability:
 
 ---
 
-## 6. Project Structure for Developers
+## 7. Model Availability Note ⚠️
+
+For security and intellectual property reasons, the pre-trained model files (`ddos_detection.pkl` and `scaler.pkl`) are **not included** in this public repository. 
+
+- **How it works**: The system is designed to load these files from the `/models` directory at runtime.
+- **For Evaluators**: You can browse the architecture and source code to understand the detection logic. A "Mock" or "Community" model will be provided in future releases for testing purposes.
+
+---
+
+## 8. Project Structure for Developers
 
 ```text
 /ddos_monitor
 ├── bin/          # Compiled executables
 ├── config/       # Whitelist files and config.json
 ├── logs/         # Granular system auditing
-├── models/       # Scikit-Learn models (Joblib) and Scalers
+├── models/       # [EXCLUDED] Scikit-Learn models and Scalers
 ├── src/          # Source Code (Core)
 │   ├── main.py             # Bootstrapper and UI Thread
 │   ├── monitor_engine.py   # Orchestrator and Multiprocessing

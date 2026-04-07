@@ -160,3 +160,6 @@ output/
 # Personal Configs
 config/config.json
 config/whitelist.txt
+
+# Trained Models
+models/

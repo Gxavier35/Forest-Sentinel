@@ -122,14 +122,23 @@ Estes valores estão definidos em `constants.py` e garantem a estabilidade do si
 
 ---
 
-## 6. Estrutura do Projeto para Desenvolvedores
+## 7. Disponibilidade do Modelo ⚠️
+
+Por razões de segurança e propriedade intelectual, os arquivos de modelo pré-treinados (`ddos_detection.pkl` e `scaler.pkl`) **não estão incluídos** neste repositório público.
+
+- **Como funciona**: O sistema é projetado para carregar estes arquivos do diretório `/models` em tempo de execução.
+- **Para Avaliação**: Você pode navegar pela arquitetura e pelo código-fonte para entender a lógica de detecção. Um modelo "Mock" ou de comunidade será fornecido em futuras versões para fins de teste.
+
+---
+
+## 8. Estrutura do Projeto para Desenvolvedores
 
 ```text
 /ddos_monitor
 ├── bin/          # Executáveis compilados
 ├── config/       # Arquivos de whitelist e config.json
 ├── logs/         # Auditoria granular do sistema
-├── models/       # Modelos Scikit-Learn (Joblib) e Scalers
+├── models/       # [EXCLUÍDO] Modelos Scikit-Learn e Scalers
 ├── src/          # Código Fonte (Core)
 │   ├── main.py             # Bootstrapper e UI Thread
 │   ├── monitor_engine.py   # Orquestrador e Multiprocessing
