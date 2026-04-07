@@ -22,7 +22,7 @@ if (Test-Path "*.spec") { Remove-Item -Force "*.spec" }
 $baseArgs = @(
     "src/main.py",
     "--noconsole",
-    "--name=Forest Sentinel",
+    "--name=`"Forest Sentinel`"",
     "--paths=src",
     "--exclude-module=PySide6",
     "--exclude-module=PyQt5",

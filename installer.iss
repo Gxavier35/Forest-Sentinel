@@ -1,13 +1,13 @@
 [Setup]
 AppName=Forest Sentinel
-AppVersion=1.1.1
+AppVersion=1.0.0
 AppPublisher=Forest Sentinel Systems
 AppSupportURL=https://github.com/ForestSentinel
 AppUpdatesURL=https://github.com/ForestSentinel
 DefaultDirName={autopf}\Forest Sentinel
 DefaultGroupName=Forest Sentinel
 OutputDir=.\Instalador
-OutputBaseFilename=ForestSentinel_Setup_v1.1.1
+OutputBaseFilename=ForestSentinel_Setup_v1.0.0
 SetupIconFile=assets\icon.ico
 Compression=lzma2
 SolidCompression=yes

@@ -1,5 +1,5 @@
 @echo off
-set VERSION=1.1.1
+set VERSION=1.0.0
 echo ###########################################################
 echo # Forest Sentinel - Gerador de Build v%VERSION%
 echo ###########################################################
