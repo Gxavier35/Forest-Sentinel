@@ -465,10 +465,6 @@ class MonitorEngine(QObject):
                 {"src_ip": ip, "time": datetime.now().strftime("%H:%M:%S")}
             )
 
-        # Sincroniza tracking de IPs ativos de forma robusta
-        active_flow_ips = [fk[0] for fk, rec, pkts_snap, ls, la, lr in flow_work_list]
-        self.attack_manager.get_stale_from_tracking(active_flow_ips)
-
         total_active = len(ui_results)
         total_attacks = 0
 

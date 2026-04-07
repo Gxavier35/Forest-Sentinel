@@ -286,5 +286,6 @@ def compute_features(flow_key, packets):
     )
 
     # Clipping e Normalização final (Isolation Forest é sensível a escala massiva)
-    features = np.nan_to_num(features, nan=0.0, posinf=1e6, neginf=-1e6)
+    features = np.nan_to_num(features, nan=0.0)
+    features = np.clip(features, -1e5, 1e5)
     return features

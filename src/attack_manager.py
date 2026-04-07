@@ -169,9 +169,12 @@ class AttackStateManager:
         to_block = []
         to_norm = []
         to_log = {}
+        active_ips = set()
         current_cycle_attacks = {}
-
         for fk, rec, pkts_snap, ls_snap, la_snap, lr_snap in flow_work_list:
+            src_ip, dst_ip, src_port, dst_port, proto = fk
+            active_ips.add(src_ip)
+
             if not pkts_snap:
                 continue
 
@@ -179,7 +182,6 @@ class AttackStateManager:
             label, confidence, is_attack = (
                 lr_fresh if lr_fresh else (DetectionStatus.NORMAL, 0.0, False)
             )
-            src_ip, dst_ip, src_port, dst_port, proto = fk
             proto_name = get_proto_name(proto)
 
             if self.is_whitelisted(src_ip):
@@ -251,6 +253,9 @@ class AttackStateManager:
 
             for ip, (lbl, conf) in to_log.items():
                 self._logged_attacks_engine.add(ip)
+
+            # 3. Sincroniza tracking de IPs ativos de forma robusta
+            self.get_stale_from_tracking(active_ips)
 
         return ui_results, to_block, to_log, to_norm
 
