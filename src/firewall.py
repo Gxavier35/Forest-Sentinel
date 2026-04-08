@@ -134,69 +134,42 @@ class LinuxFirewall(BaseFirewall):
         if self.has_nft and is_admin() and not self._nft_setup_done:
             self._setup_nft()
 
-    def _setup_nft(self):
+    def _setup_nft(self) -> bool:
+        """Configura a estrutura básica do nftables. Retorna True se estiver pronto."""
         try:
+            # 1. Verifica se a tabela já existe
             check = subprocess.run(
                 ["nft", "list", "table", "ip", "ddos_monitor"],
                 capture_output=True,
                 text=True,
             )
-            if check.returncode != 0:
-                subprocess.run(
-                    ["nft", "add", "table", "ip", "ddos_monitor"],
-                    capture_output=True,
-                    check=True,
-                )
-                subprocess.run(
-                    [
-                        "nft",
-                        "add",
-                        "chain",
-                        "ip",
-                        "ddos_monitor",
-                        "input",
-                        "{ type filter hook input priority 0 ; }",
-                    ],
-                    capture_output=True,
-                    check=True,
-                )
-                subprocess.run(
-                    [
-                        "nft",
-                        "add",
-                        "set",
-                        "ip",
-                        "ddos_monitor",
-                        "blackhole",
-                        "{ type ipv4_addr ; }",
-                    ],
-                    capture_output=True,
-                    check=True,
-                )
-                subprocess.run(
-                    [
-                        "nft",
-                        "add",
-                        "rule",
-                        "ip",
-                        "ddos_monitor",
-                        "input",
-                        "ip",
-                        "saddr",
-                        "@blackhole",
-                        "drop",
-                    ],
-                    capture_output=True,
-                    check=True,
-                )
-                self.logger.info(
-                    "NFTables: Estrutura 'ddos_monitor' inicializada com sucesso."
-                )
-            else:
+            if check.returncode == 0:
                 self.logger.info("NFTables: Estrutura 'ddos_monitor' já existente.")
+                self._nft_setup_done = True
+                return True
+
+            # 2. Criação atômica/sequencial da estrutura
+            self.logger.info("NFTables: Inicializando nova estrutura 'ddos_monitor'...")
+            
+            commands = [
+                ["nft", "add", "table", "ip", "ddos_monitor"],
+                ["nft", "add", "chain", "ip", "ddos_monitor", "input", "{ type filter hook input priority 0 ; }"],
+                ["nft", "add", "set", "ip", "ddos_monitor", "blackhole", "{ type ipv4_addr ; }"],
+                ["nft", "add", "rule", "ip", "ddos_monitor", "input", "ip", "saddr", "@blackhole", "drop"]
+            ]
+
+            for cmd in commands:
+                res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                if res.returncode != 0:
+                    self.logger.error(f"NFTables: Falha no comando '{' '.join(cmd)}': {res.stderr.strip()}")
+                    return False
+
+            self.logger.warning("🛡️ NFTables: Estrutura 'ddos_monitor' configurada e ativa.")
             self._nft_setup_done = True
+            return True
         except Exception as e:
-            self.logger.error(f"Falha ao configurar estrutura NFTables: {e}")
+            self.logger.error(f"Falha crítica ao configurar estrutura NFTables: {e}")
+            return False
 
     def block(self, ip: str) -> bool:
         if not is_valid_ip(ip):

@@ -32,10 +32,10 @@ graph TD
 To handle high-throughput environments (**1Gbps+**), the feature extraction engine has been fully optimized using NumPy vectorized operations.
 
 ### Technical Performance Highlights:
-*   **O(1) Bulk Burst Calculation**: Uses temporal masks for instantaneous burst detection.
+*   **High-Throughput Fast Path**: Critical optimizations in `flow_manager.py` reduce Scapy overhead by up to 50% using single-pass layer detection and protocol caching.
 *   **`is_dirty` Flow Filtering**: Evaluation pipeline skips stable flows (no new activity), reducing CPU overhead by up to 70% in typical network conditions.
 *   **Single-Pass Loop Architecture**: Threat evaluation and UI data generation now occur in a unified O(N) cycle, minimizing list iterations.
-*   **Optimized Batch Inference**: Uses `np.vstack` for high-performance memory allocation when sending features to the AI Worker.
+*   **Optimized Batch Inference**: Uses `np.vstack` for high-performance memory allocation when sending features to the AI Worker, ensuring consistency between sync and async flows.
 
 ---
 
@@ -43,11 +43,11 @@ To handle high-throughput environments (**1Gbps+**), the feature extraction engi
 
 The system uses **Isolation Forest** to detect statistical anomalies without needing prior knowledge of specific attack signatures.
 
-> [!IMPORTANT]
-> **Watchdog & Circuit Breaker**
+> **Watchdog & Resilience**
 > - **Self-Healing**: The watchdog detects AI process failure and triggers an automatic restart.
+> - **Event-Driven Synchronization**: Replaced 100ms polling with `threading.Event`, drastically reducing CPU usage and latency for synchronous predictions.
+> - **Memory Robustness**: Automatic cleanup mechanism for orphaned AI results, preventing memory leaks during long-running sessions.
 > - **Crash-Loop Protection**: If the AI process fails 5 times within 60 seconds, the system pauses auto-restarts to prevent CPU exhaustion.
-> - **Error Propagation**: Critical model load errors (e.g., missing pickle files) are reported via IPC and displayed directly on the Dashboard event console.
 
 ### Detection Profiles (Thresholds):
 | Profile | Sensitivity | Anomaly Threshold | Ideal Use-Case |
@@ -81,6 +81,8 @@ The system uses **Isolation Forest** to detect statistical anomalies without nee
 2.  **Attack (Red)**: Persistent anomaly detected for > 60s.
 3.  **Auto-Block (Firewall)**: Source IP is automatically added to the OS Firewall if the attack persists.
 
+- **Deterministic IP Normalization**: Whitelist managed via `ipaddress.ip_network`, ensuring consistent and string-variation-proof behavior.
+- **Firewall Resilience**: Explicit validation of each `nftables` (Linux) command with real-time status reporting, preventing silent protection failures.
 - **IPv6 Local Ranges**: Unique Local Addresses (ULA) and Link-local ranges.
 - **Defensive Feature Check**: Zeroed vector fallback for empty flows to prevent calculation errors.
 

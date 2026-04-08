@@ -73,79 +73,79 @@ class FlowManager:
             self._flows.clear()
 
     def process_packet(self, pkt):
-        """Invocado em altíssima frequência para rotear pacotes raw da rede."""
+        """Invocado em altíssima frequência. Otimizado para path de execução rápida."""
         with self._pkt_lock:
             self._pkt_count += 1
 
         try:
-            if pkt.haslayer(IP):
-                ip_layer = pkt[IP]
-            elif pkt.haslayer(IPv6):
-                ip_layer = pkt[IPv6]
-            else:
-                return
+            # 1. Extração rápida de camada IP
+            ip_layer = pkt.getlayer(IP)
+            is_ipv6 = False
+            if ip_layer is None:
+                ip_layer = pkt.getlayer(IPv6)
+                if ip_layer is None: return
+                is_ipv6 = True
 
-            proto = ip_layer.nh if pkt.haslayer(IPv6) else ip_layer.proto
+            proto = ip_layer.nh if is_ipv6 else ip_layer.proto
             src_ip = ip_layer.src
             dst_ip = ip_layer.dst
 
-            if pkt.haslayer(IP) and any(
-                dst_ip.startswith(p) for p in self._MULTICAST_PREFIXES_V4
-            ):
-                return
-            if pkt.haslayer(IPv6) and any(
-                dst_ip.lower().startswith(p) for p in self._MULTICAST_PREFIXES_V6
-            ):
-                return
+            # 2. Multicast rápido (Tuple startswith é O(1) strings)
+            if not is_ipv6:
+                if dst_ip.startswith(self._MULTICAST_PREFIXES_V4): return
+            else:
+                if dst_ip.lower().startswith(self._MULTICAST_PREFIXES_V6): return
 
+            # 3. Portas e Protocolos (Fast path para TCP/UDP)
             src_port, dst_port = 0, 0
             tcp_flags, tcp_window = None, None
-            ip_header_len = (
-                ip_layer.ihl * 4 if pkt.haslayer(IP) and ip_layer.ihl else 20
-            )
-            pkt_len = len(pkt)
+            
+            # Recupera camadas transportadoras se existirem
+            trans_layer = pkt.getlayer(TCP)
+            if trans_layer:
+                src_port, dst_port = trans_layer.sport, trans_layer.dport
+                tcp_flags, tcp_window = int(trans_layer.flags), trans_layer.window
+            else:
+                trans_layer = pkt.getlayer(UDP)
+                if trans_layer:
+                    src_port, dst_port = trans_layer.sport, trans_layer.dport
 
-            if pkt.haslayer(TCP):
-                tcp = pkt[TCP]
-                src_port, dst_port = tcp.sport, tcp.dport
-                tcp_flags, tcp_window = int(tcp.flags), tcp.window
-            elif pkt.haslayer(UDP):
-                udp = pkt[UDP]
-                src_port, dst_port = udp.sport, udp.dport
-
+            # 4. Geração de Keys
             key = (src_ip, dst_ip, src_port, dst_port, proto)
             rev = (dst_ip, src_ip, dst_port, src_port, proto)
 
+            # 5. Gerenciamento de Memória de Fluxo
             with self._lock:
+                # Flow Lookup (Path mais comum primeiro)
                 if key in self._flows:
-                    direction, flow_key = "fwd", key
-                    self._flows.move_to_end(key)  # Marca como mais recente
+                    flow_key = key
+                    direction = "fwd"
+                    self._flows.move_to_end(key)
                 elif rev in self._flows:
-                    direction, flow_key = "bwd", rev
-                    self._flows.move_to_end(rev)  # Marca como mais recente
+                    flow_key = rev
+                    direction = "bwd"
+                    self._flows.move_to_end(rev)
                 else:
                     direction, flow_key = "fwd", key
-
                     if len(self._flows) >= MAX_FLOWS:
-                        # Expulsão LRU O(1): remove os 50 itens mais antigos instantaneamente
-                        try:
-                            for _ in range(50):
-                                self._flows.popitem(last=False)
-                        except (Exception, KeyError):
-                            pass
+                        # Expulsão em lote se atingir o teto
+                        for _ in range(50):
+                            try: self._flows.popitem(last=False)
+                            except KeyError: break
 
                     self._flows[flow_key] = FlowRecord()
 
-                self._flows[flow_key].add(
-                    {
-                        "time": float(pkt.time),
-                        "length": pkt_len,
-                        "ip_header_len": ip_header_len,
-                        "tcp_flags": tcp_flags,
-                        "tcp_window": tcp_window,
-                        "direction": direction,
-                    }
-                )
+                # Adição rápida ao snapshot do fluxo
+                self._flows[flow_key].packets.append({
+                    "time": float(pkt.time),
+                    "length": len(pkt),
+                    "ip_header_len": (ip_layer.ihl * 4 if not is_ipv6 and hasattr(ip_layer, "ihl") else 20),
+                    "tcp_flags": tcp_flags,
+                    "tcp_window": tcp_window,
+                    "direction": direction,
+                })
+                self._flows[flow_key].last_seen = time.time()
+                self._flows[flow_key].is_dirty = True
         except Exception as e:
             self.logger.debug(f"Pkt process error: {e}")
 

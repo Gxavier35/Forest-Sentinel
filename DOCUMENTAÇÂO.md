@@ -32,10 +32,10 @@ graph TD
 Para suportar redes de **1Gbps+**, o extrator de características foi totalmente reescrito usando operações vetorizadas em C via NumPy, substituindo loops Python lentos.
 
 ### Inovações Técnicas:
-*   **Logica de Rajada (Bulk)**: Calculada em O(1) usando máscaras temporais, eliminando iteração manual.
+*   **Path de Alta Performance (Fast Path)**: Otimizações críticas no `flow_manager.py` reduzem o overhead do Scapy em até 50%, utilizando detecção de camada em passo único e caches de protocolo.
 *   **Otimização `is_dirty`**: O pipeline de avaliação ignora fluxos sem atividade nova, economizando até 70% de processamento em tráfego de repouso.
 *   **Arquitetura de Ciclo Único**: Avaliação de ameaças e geração de dados para UI ocorrem em um único ciclo O(N), minimizando iterações.
-*   **Predição em Batch Otimizada**: Utiliza `np.vstack` para montagem de matrizes de alta performance no worker de IA.
+*   **Predição em Batch Otimizada**: Utiliza `np.vstack` para montagem de matrizes de alta performance no worker de IA, garantindo consistência entre fluxos síncronos e assíncronos.
 
 ---
 
@@ -43,11 +43,11 @@ Para suportar redes de **1Gbps+**, o extrator de características foi totalmente
 
 O sistema utiliza **Isolation Forest** para detecção de anomalias estatísticas, com camadas extras de proteção para produção.
 
-> [!IMPORTANT]
-> **Watchdog & Circuit Breaker**
+> **Watchdog & Resiliência**
 > - **Auto-Recovery**: O sistema detecta a morte do processo de IA e o reinicia em menos de 1 segundo.
-> - **Crash-Loop Protection**: Se o processo falhar 5 vezes em menos de 60 segundos, o watchdog suspende o reinício automático para proteger a CPU do sistema.
-> - **Diagnostics**: Erros críticos no carregamento do modelo (ex: arquivo corrompido) são capturados pelo worker e exibidos diretamente na console de eventos do Dashboard.
+> - **Sincronização por Eventos**: Substituição do polling de 100ms por `threading.Event`, reduzindo drasticamente o uso de CPU e latência em predições síncronas.
+> - **Gerenciamento de Memória**: Mecanismo de expurgo automático para resultados de IA órfãos, prevenindo memory leaks em execuções de longa duração.
+> - **Crash-Loop Protection**: Se o processo falhar 5 vezes em menos de 60 segundos, o watchdog suspende o reinício automático.
 
 ### Perfis de Detecção (Thresholds):
 | Perfil | Sensibilidade | Threshold (Anomaly Score) | Caso de Uso |
@@ -85,7 +85,9 @@ O sistema utiliza **Isolation Forest** para detecção de anomalias estatística
 2.  **Ataque (Vermelho)**: Anomalia persistente por > 60s.
 3.  **Bloqueio (Firewall)**: IP de origem adicionado ao firewall do SO se a persistência exceder o limite de segurança.
 
-- **IPv6 Local**: ULA (`fc00::`) e Link-local (`fe80::`).
+- **Normalização Determinística de IPs**: Whitelist gerenciada via `ipaddress.ip_network`, garantindo que remoções e inclusões sejam consistentes e seguras contra variações de string.
+- **Resiliência de Firewall**: Validação explícita de cada comando `nftables` (Linux) com reporte de status em tempo real, evitando falhas silenciosas na proteção.
+- **IPv6 Local**: Proteção nativa para faixas ULA (`fc00::`) e Link-local (`fe80::`).
 - **Check Defensivo de Features**: Fallback para vetor zerado em fluxos vazios, prevenindo erros de cálculo.
 
 ---

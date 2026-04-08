@@ -50,7 +50,11 @@ def _ai_inference_worker(in_queue, out_queue, model_path, scaler_path):
         model = joblib.load(model_path)
         scaler = joblib.load(scaler_path)
     except Exception as e:
-        out_queue.put((-1, "ERROR", str(e)))
+        # Em erro, o worker envia um ID -1 e o status ERROR
+        try:
+            out_queue.put((-1, DetectionStatus.ERROR.name, str(e)))
+        except:
+            pass
         return
 
     while True:
@@ -74,7 +78,7 @@ def _ai_inference_worker(in_queue, out_queue, model_path, scaler_path):
             out_queue.put((req_id, "OK", batch_results))
         except Exception as e:
             err_req_id = item[0] if isinstance(item, tuple) and len(item) > 0 else 0
-            out_queue.put((err_req_id, "ERROR", str(e)))
+            out_queue.put((err_req_id, DetectionStatus.ERROR.name, str(e)))
 
 
 class MonitorEngine(QObject):
@@ -130,6 +134,7 @@ class MonitorEngine(QObject):
         self._ai_lock = threading.Lock()
         # {req_id: (flow_keys, timestamp)}
         self._ai_pending_tasks = {}
+        self._ai_sync_events = {} # {req_id: threading.Event}
         self._ai_collector_thread = None
         self.MAX_AI_IN_FLIGHT = 3
 
@@ -320,13 +325,21 @@ class MonitorEngine(QObject):
                 resp_id, status, data = self._out_q.get(timeout=0.5)
                 
                 # Caso especial: Erro global do worker durante o startup ou crash
-                if resp_id == -1 and status == "ERROR":
+                if resp_id == -1 and status == DetectionStatus.ERROR.name:
                     self.logger.error(f"Erro crítico no Motor de IA: {data}")
                     self.error_occurred.emit(f"Falha no Motor de IA: {data}")
                     continue
 
                 with self._ai_lock:
                     self._ai_results[resp_id] = (status, data)
+                    # Notifica wait() síncrono se existir
+                    if resp_id in self._ai_sync_events:
+                        self._ai_sync_events[resp_id].set()
+                    # Se não houver ninguém esperando (nem sync nem async), logamos e limpamos para evitar leak
+                    elif resp_id not in self._ai_pending_tasks:
+                        if status == DetectionStatus.ERROR.name:
+                            self.logger.error(f"IA: Recebido erro para ID órfão {resp_id}: {data}")
+                        self._ai_results.pop(resp_id, None)
             except queue.Empty:
                 continue
             except Exception as e:
@@ -397,7 +410,9 @@ class MonitorEngine(QObject):
                 if not self._running:
                     break
 
-                self.logger.warning("Sniffer parou inesperadamente.")
+                # Captura detalhes sobre por que parou se possível
+                stop_reason = "Finalizado pelo usuário" if not self._running else "Falha desconhecida"
+                self.logger.warning(f"Sniffer parou inesperadamente. Motivo: {stop_reason}")
                 self.status_changed.emit("⚠️ Conexão perdida. Reconectando…")
 
             except Exception as e:
@@ -597,18 +612,30 @@ class MonitorEngine(QObject):
         [DEPRECATED/TESTING]: Mantido apenas para compatibilidade de testes unitários 
         ou chamadas síncronas raras. Para o loop principal de realtime, use _predict_batch_async.
         """
-        # Se for chamado de forma síncrona, faz um mini-loop de espera (como antes, mas usando o novo coletor)
         if not feats_list: return []
+        
         req_id = time.time_ns()
+        ev = threading.Event()
+        
         try:
-            self._in_q.put((req_id, np.array(feats_list), self._ai_thresholds.get(self._profile, -0.15)))
-            start = time.time()
-            while (time.time() - start) < 3.0:
+            with self._ai_lock:
+                self._ai_sync_events[req_id] = ev
+            
+            # Submete para o processo de IA
+            self._in_q.put((req_id, np.vstack(feats_list), self._ai_thresholds.get(self._profile, -0.15)))
+            
+            # Espera eficiente sem polling ativo
+            if ev.wait(timeout=5.0):
                 with self._ai_lock:
-                    if req_id in self._ai_results:
-                        status, data = self._ai_results.pop(req_id)
-                        return data if status == "OK" else []
-                time.sleep(0.1)
+                    status, data = self._ai_results.pop(req_id, (DetectionStatus.ERROR.name, []))
+                    self._ai_sync_events.pop(req_id, None)
+                return data if status == "OK" else [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)
+            else:
+                self.logger.warning(f"Timeout na predição síncrona IA (req_id: {req_id})")
+                with self._ai_lock:
+                    self._ai_sync_events.pop(req_id, None)
+                    self._ai_results.pop(req_id, None) # Limpa possível resto para evitar leak
         except Exception as e:
-            self.logger.debug(f"Sync AI prediction error: {e}")
+            self.logger.error(f"Sync AI prediction error: {e}")
+            
         return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)

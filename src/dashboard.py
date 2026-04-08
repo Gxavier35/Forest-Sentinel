@@ -411,15 +411,15 @@ class MainWindow(QMainWindow):
         for row, res in enumerate(top_50):
             label = res.label
 
-            if label == "ATTACK":
+            if label == DetectionStatus.ATTACK.name:
                 col = COLORS["danger"]
                 display_label = tr("label_attack")
                 a_count += 1
-            elif label == "SUSPICIOUS":
+            elif label == DetectionStatus.SUSPICIOUS.name:
                 col = COLORS["warning"]
                 display_label = tr("label_suspicious")
                 n_count += 1
-            elif label == "ERROR":
+            elif label == DetectionStatus.ERROR.name:
                 col = COLORS["danger"]
                 display_label = tr("label_error")
                 n_count += 1

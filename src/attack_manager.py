@@ -98,25 +98,12 @@ class AttackStateManager:
         try:
             net = ipaddress.ip_network(val, strict=False)
             with self._lock:
-                # 1. Tentar remoção por objeto (mais rápido)
+                # O ipaddress.ip_network(strict=False) já normaliza a entrada (ex: 1.2.3.4 -> 1.2.3.4/32).
+                # Portanto, a comparação direta de objetos no set é eficiente e suficiente.
                 if net in self._whitelist:
                     self._whitelist.remove(net)
                     if net.num_addresses == 1:
                         self._whitelist_ips.discard(str(net.network_address))
-                    self._save_whitelist()
-                    return True
-                
-                # 2. Fallback por comparação de string (casos de normalização/objetos diferentes)
-                to_remove = None
-                for ex in self._whitelist:
-                    if str(ex) == str(net):
-                        to_remove = ex
-                        break
-                
-                if to_remove:
-                    self._whitelist.remove(to_remove)
-                    if to_remove.num_addresses == 1:
-                        self._whitelist_ips.discard(str(to_remove.network_address))
                     self._save_whitelist()
                     return True
         except ValueError:
