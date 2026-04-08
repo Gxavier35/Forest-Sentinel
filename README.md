@@ -24,6 +24,11 @@ graph TD
 *   **Orchestrator (`MonitorEngine`)**: Manages process lifecycles and Inter-Process Communication (IPC).
 *   **AI Inference Worker**: An isolated process running the Isolation Forest model for non-blocking analysis.
 *   **Proactive Watchdog**: A dedicated monitor that tracks the AI worker's health. If the process crashes (e.g., OOM), it restarts within seconds to maintain defense continuity.
+*   **High-Precision AI Engine**: Integration with Scikit-Learn and Joblib for real-time inference.
+*   **Event-Driven Synchronization**: Optimized IPC communication between core and AI worker, eliminating polling and latency.
+*   **Deterministic Standardization**: Data integrity guaranteed via Enums (DetectionStatus) across the entire pipeline.
+*   **Multi-Interface Monitoring**: Automatic discovery of network adapters with simultaneous monitoring support.
+*   **Intelligent Firewall Management**: Automatic blocking and persistent whitelist via `nftables` (Linux) or audit logging (Windows).
 
 ---
 

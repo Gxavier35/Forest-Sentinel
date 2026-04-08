@@ -22,8 +22,11 @@ graph TD
 
 ### Componentes Core:
 *   **Orquestrador (`MonitorEngine`)**: Coordena o ciclo de vida dos processos e a comunicação via IPC.
-*   **Worker de IA**: Processo isolado que carrega o modelo iForest e executa inferências assíncronas.
-*   **Watchdog Proativo**: Monitora o PID do worker de IA. Se o processo morrer (OOM ou erro), ele reinicia automaticamente e reporta à UI.
+*   **Motor IA de Alta Precisão**: Integração com Scikit-Learn e Joblib para inferência em tempo real.
+*   **Sincronização por Eventos**: Comunicação IPC otimizada entre o motor e o worker IA, eliminando polling e latência.
+*   **Padronização Determinística**: Garantia de integridade de dados através de Enums (DetectionStatus) em todo o fluxo, da detecção à UI.
+*   **Monitoramento Multi-Interface**: Detecção automática de adaptadores de rede e suporte a monitoramento simultâneo.
+*   **Gestão Inteligente de Firewall**: Bloqueio automático e whitelist persistente via `nftables` (Linux) ou logs de auditoria (Windows).
 
 ---
 
