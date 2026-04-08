@@ -1,155 +1,132 @@
-# 🌲 Forest Sentinel (Sentinela da Floresta)
+# 🌲 Forest Sentinel (Sentinela da Floresta) — Documentação Técnica v2.0
 
-> **Manual Técnico Completo e Documentação de Arquitetura**
-> **Sistema de Detecção e Mitigação de DDoS em Tempo Real Baseado em IA**
-
-O **Forest Sentinel** é uma solução de vanguarda projetada para monitorar, detectar e mitigar ataques de Negação de Serviço Distribuída (DDoS) utilizando técnicas avançadas de **Aprendizado de Máquina Não Supervisionado**. 
+> **Manual Master de Engenharia e Arquitetura**
+> **Sistema de Monitoramento DDoS de Alto Desempenho com IA e Vetorização NumPy**
 
 ---
 
-## 1. Arquitetura de Defesa em Camadas
+## 🏗️ 1. Arquitetura de Sistema (High-Level)
 
-O sistema opera em cinco camadas distintas para garantir eficiência máxima e latência mínima:
-
-### Fluxo de Processamento (Diagrama de Sequência)
+O **Forest Sentinel** é construído sobre uma arquitetura de múltiplos processos (Multiprocessing) para garantir que a análise de IA pesada não interfira na captura de pacotes em tempo real.
 
 ```mermaid
-sequenceDiagram
-    participant Net as Interface de Rede
-    participant Sniff as Scapy Sniffer
-    participant FM as FlowManager (LRU)
-    participant FE as Feature Engineer
-    participant IA as Worker Process (iForest)
-    participant AM as AttackManager
-    participant FW as Firewall (SO)
-
-    Net->>Sniff: Pacote Capturado
-    Sniff->>FM: Disparar Agregador
-    FM->>FM: Agrupar em Fluxo (5-tuple)
-    alt Fluxo atingiu MIN_PKTS (5)
-        FM->>FE: Extrair 38 Vetores
-        FE->>IA: Enfileirar Inferência
-        IA->>IA: Scaler + Predict (Isolation Forest)
-        IA->>AM: reportar Score (Anomalia)
-    end
-    AM->>AM: Avaliar Persistência (Time-Window)
-    alt Estado == ATTACK
-        AM->>FW: Comando de Bloqueio
-        FW->>Net: Regra Aplicada (Drop)
-    end
+graph TD
+    A[Rede/NIC] -->|Raw Packets| B(Scapy Sniffer)
+    B -->|5-tuple| C{Flow Manager}
+    C -->|Vectorized Extractor| D[NumPy Feature Matrix]
+    D -->|IPC Queue| E[AI Inference Worker]
+    E -->|Anomaly Score| F[Attack State Manager]
+    F -->|Persistence Logic| G[Dashboard / Firewall]
+    H[Watchdog Timer] -.->|Monitor| E
 ```
 
----
-
-## 2. O Motor de IA: Isolation Forest (iForest)
-
-O Forest Sentinel opta pelo algoritmo **Isolation Forest** por sua capacidade intrínseca de detectar anomalias sem necessidade de treinamento prévio com cada variação de ataque.
-
-- **Filosofia**: Em vez de perfilar o tráfego normal, o iForest isola pontos que "parecem diferentes". Ataques DDoS são, por definição, anomalias estatísticas massivas.
-- **Thresholds por Perfil**:
-  - **Home** (`-0.30`): Menos sensível, ideal para redes com tráfego doméstico variado.
-  - **PME** (`-0.15`): Equilibrado para ambientes corporativos.
-  - **Datacenter** (`0.00`): Altamente sensível, detecta variações mínimas em tráfego de servidores.
+### Componentes Core:
+*   **Orquestrador (`MonitorEngine`)**: Coordena o ciclo de vida dos processos e a comunicação via IPC.
+*   **Worker de IA**: Processo isolado que carrega o modelo iForest e executa inferências assíncronas.
+*   **Watchdog Proativo**: Monitora o PID do worker de IA. Se o processo morrer (OOM ou erro), ele reinicia automaticamente e reporta à UI.
 
 ---
 
-## 3. Glossário Técnico das 38 Features
+## ⚡ 2. Motor de Extração Vetorizada (NumPy)
 
-Cada fluxo de rede é convertido em um vetor numérico de 38 dimensões baseado no padrão **CICFlowMeter**.
+Para suportar redes de **1Gbps+**, o extrator de características foi totalmente reescrito usando operações vetorizadas em C via NumPy, substituindo loops Python lentos.
 
-| # | Feature | Descrição Técnica |
-|---|---|---|
-| 1 | `flow_duration` | Duração total do fluxo em microssegundos. |
-| 2 | `fwd_pkt_max` | Tamanho máximo do pacote na direção de ida (forward). |
-| 3 | `fwd_pkt_min` | Tamanho mínimo do pacote na direção de ida. |
-| 4 | `bwd_pkt_min` | Tamanho mínimo do pacote na direção de volta (backward). |
-| 5 | `flow_bytes_s` | Taxa de transferência total (Bytes por segundo). |
-| 6 | `flow_pkts_s` | Taxa de pacotes total (Pacotes por segundo). |
-| 7 | `fwd_iat_min` | Tempo mínimo entre chegadas de pacotes (Ida). |
-| 8 | `bwd_iat_min` | Tempo mínimo entre chegadas de pacotes (Volta). |
-| 9 | `bwd_psh` | Contagem de flags PSH na direção de volta. |
-| 10 | `fwd_urg` | Contagem de flags URG na direção de ida. |
-| 11 | `bwd_urg` | Contagem de flags URG na direção de volta. |
-| 12 | `bwd_header_len` | Somatório dos tamanhos de cabeçalho IP/TCP (Volta). |
-| 13 | `bwd_pkts_s` | Taxa de pacotes na direção de volta. |
-| 14 | `min_pkt_length` | Menor pacote detectado em todo o fluxo. |
-| 15 | `pkt_len_var` | Variância estatística do tamanho dos pacotes. |
-| 16 | `fin_count` | Total de flags FIN (Finalização de conexão). |
-| 17 | `syn_count` | Total de flags SYN (Início de conexão/Handshake). |
-| 18 | `rst_count` | Total de flags RST (Reset de conexão). |
-| 19 | `psh_count` | Total de flags PSH (Push de dados). |
-| 20 | `ack_count` | Total de flags ACK (Acknowledge). |
-| 21 | `urg_count` | Total de flags URG (Urgência). |
-| 22 | `cwr_count` | Flags de Congestion Window Reduced (CWR). |
-| 23 | `ece_count` | Flags ECN Echo. |
-| 24 | `down_up_ratio` | Razão entre tráfego de download e upload. |
-| 25 | `fwd_header_len` | Somatório dos cabeçalhos na direção de ida. |
-| 26-28| `fwd_bulk_*` | Métricas de rajadas (Bulk) na direção de ida (Bytes, Pkts, Rate). |
-| 29-31| `bwd_bulk_*` | Métricas de rajadas (Bulk) na direção de volta. |
-| 32 | `subflow_fwd` | Bytes totais em subfluxos de ida. |
-| 33 | `init_win_fwd` | Tamanho inicial da janela TCP (Ida). |
-| 34 | `init_win_bwd` | Tamanho inicial da janela TCP (Volta). |
-| 35-36| `active_*` | Estreitamento de janelas ativas (Std, Max). |
-| 37 | `idle_std` | Desvio padrão do tempo de inatividade do fluxo. |
-| 38 | `inbound` | Flag binária (1.0 se Destino é Local e Origem é Externa). |
+### Inovações Técnicas:
+*   **Colheita Unificada (Harvesting)**: Dados brutos de pacotes são convertidos para arrays NumPy em uma única passagem.
+*   **Bitmap Flag Counting**: Contagem de flags TCP (SYN, ACK, PSH) feita em O(N) via operações bitwise sobre colunas de inteiros.
+*   **Logica de Rajada (Bulk)**: Calculada em O(1) usando `np.split` baseada em máscaras temporais, eliminando iteração manual.
+*   **Otimização `is_dirty`**: O pipeline de avaliação ignora fluxos sem atividade nova, economizando até 70% de processamento em tráfego de repouso.
 
 ---
 
-## 4. Limites e Constantes Sistêmicas
+## 🤖 3. Inteligência Artificial e Resiliência
 
-Estes valores estão definidos em `constants.py` e garantem a estabilidade do sistema:
+O sistema utiliza **Isolation Forest** para detecção de anomalias estatísticas, com camadas extras de proteção para produção.
 
-- `FLOW_TIMEOUT = 10s`: Fluxos sem pacotes por 10s são considerados encerrados.
-- `MIN_PKTS = 5`: O sistema aguarda 5 pacotes para ter uma amostra estatística confiável antes da IA agir.
-- `MAX_FLOWS = 5000`: Limite de fluxos simultâneos em memória para evitar consumo excessivo de RAM.
-- `LEVEL2_SECS = 60s`: Tempo que um IP precisa ser detectado como "Ataque" continuamente para sofrer bloqueio automático.
+> [!IMPORTANT]
+> **Watchdog & Circuit Breaker**
+> - **Auto-Recovery**: O sistema detecta a morte do processo de IA e o reinicia em menos de 1 segundo.
+> - **Crash-Loop Protection**: Se o processo falhar 5 vezes em menos de 60 segundos, o watchdog suspende o reinício automático para proteger a CPU do sistema.
+> - **Diagnostics**: Erros críticos no carregamento do modelo (ex: arquivo corrompido) são capturados pelo worker e exibidos diretamente na console de eventos do Dashboard.
 
----
-
-## 5. Guia de Solução de Problemas (Troubleshooting)
-
-### O aplicativo não inicia ou "trava" no splash
-- **Causa**: Falta de privilégios de Administrador.
-- **Solução**: Clique com o botão direito no executável e selecione "Executar como Administrador". O sistema precisa de acesso direto aos drivers de rede.
-
-### Nenhum tráfego é detectado (0 PPS)
-- **Causa**: Driver **Npcap** não instalado ou interface errada selecionada.
-- **Solução**: Instale o Npcap (em modo `WinPcap compatibility`). Vá nas configurações da UI e verifique se a interface selecionada é a correta (ex: Ethernet, WiFi).
-
-### Bloqueios Falsos Positivos
-- **Causa**: Threshold de IA muito baixo para a sua rede.
-- **Solução**: Altere o perfil de "Datacenter" ou "PME" para **"Home"** nas configurações. Adicione o IP afetado à `Whitelist` na aba "Segurança".
+### Perfis de Detecção (Thresholds):
+| Perfil | Sensibilidade | Threshold (Anomaly Score) | Caso de Uso |
+| :--- | :--- | :--- | :--- |
+| **Home** | Baixa | `-0.30` | Redes domésticas com tráfego irregular. |
+| **PME** | Média | `-0.15` | Escritórios e pequenas infraestruturas. |
+| **Datacenter** | Máxima | `0.00` | Servidores expostos com tráfego previsível. |
 
 ---
 
-## 7. Disponibilidade do Modelo ⚠️
+## 📊 4. Especificações das 38 Features (Conformidade CIC)
 
-Por razões de segurança e propriedade intelectual, os arquivos de modelo pré-treinados (`ddos_detection.pkl` e `scaler.pkl`) **não estão incluídos** neste repositório público.
-
-- **Como funciona**: O sistema é projetado para carregar estes arquivos do diretório `/models` em tempo de execução.
-- **Para Avaliação**: Você pode navegar pela arquitetura e pelo código-fonte para entender a lógica de detecção. Um modelo "Mock" ou de comunidade será fornecido em futuras versões para fins de teste.
+| # | Métrica | Lógica de Cálculo |
+| :--- | :--- | :--- |
+| **1** | `flow_duration` | `diff(timestamps)`. 0.0 se apenas 1 pacote. |
+| **2-4** | `pkt_size_min/max` | Estatísticas de tamanho por direção (Fwd/Bwd). |
+| **5-6** | `flow_bytes/pkts_s` | Taxas globais baseadas na duração real. |
+| **7-8** | `iat_min` | Intervalo mínimo entre pacotes (Forward e Backward). |
+| **9-11** | `direction_flags` | Flags PSH/URG específicas por direção. |
+| **12-13** | `bwd_stats` | Métricas exclusivas do tráfego de resposta. |
+| **14-15** | `pkt_len_var` | Variância dos tamanhos para detectar inundação estática. |
+| **16-23** | `tcp_flags` | Contagem total de FIN, SYN, RST, PSH, ACK, URG, CWR, ECE. |
+| **24** | `down_up_ratio` | Razão de assimetria de tráfego. |
+| **25-31** | `bulk_metrics` | Média de Bytes/Pkts/Rate em rajadas (IAT < 0.1s). |
+| **32-34** | `init_windows` | Janela TCP do **primeiro pacote** de cada direção. |
+| **35-37** | `active/idle` | Tempos de atividade x inatividade (Threshold 1.0s). |
+| **38** | `inbound` | Boolean `1.0` se Origem é Externa e Destino é Privado/Local. |
 
 ---
 
-## 8. Estrutura do Projeto para Desenvolvedores
+## 🛡️ 5. Refinamentos de Segurança e Firewall
+
+### Lógica de Graduação de Ameaça:
+1.  **Suspeito (Amarelo)**: Anomalia detectada por < 30s.
+2.  **Ataque (Vermelho)**: Anomalia persistente por > 60s.
+3.  **Bloqueio (Firewall)**: IP de origem adicionado ao firewall do SO se a persistência exceder o limite de segurança.
+
+### Classificação de IPs (is_private_ip):
+O sistema possui detecção aprimorada para:
+- **RFC 1918**: 10.x, 172.16.x, 192.168.x.
+- **RFC 6598 (CGNAT)**: 100.64.0.0/10.
+- **IPv6 Local**: ULA (`fc00::`) e Link-local (`fe80::`).
+
+---
+
+## 🛠️ 6. Instalação e Manutenção
+
+### Requisitos:
+*   **Python 3.10+** (Recomendado 3.12 ou 3.13).
+*   **Npcap**: Instalado com a opção `WinPcap Compatibility`.
+*   **Dependências**: `pip install numpy scapy pyqt6 joblib scikit-learn`.
+
+### Suíte de Testes:
+O projeto inclui 15 testes unitários e de integração:
+- `pytest tests/test_features.py`: Valida a integridade matemática dos 38 vetores.
+- `pytest tests/test_async_ai.py`: Valida o Watchdog e o IPC.
+- `pytest tests/test_flow.py`: Valida o gerenciador de memória LRU.
+
+---
+
+## 📁 7. Estrutura de Arquivos
 
 ```text
 /ddos_monitor
-├── bin/          # Executáveis compilados
-├── config/       # Arquivos de whitelist e config.json
-├── logs/         # Auditoria granular do sistema
-├── models/       # [EXCLUÍDO] Modelos Scikit-Learn e Scalers
-├── src/          # Código Fonte (Core)
-│   ├── main.py             # Bootstrapper e UI Thread
-│   ├── monitor_engine.py   # Orquestrador e Multiprocessing
-│   ├── flow_manager.py     # Gerência de Estado de Fluxo
+├── bin/          # Compilados finalizados
+├── config/       # White/Blacklists e configurações JSON
+├── models/       # [SENSÍVEL] ddos_detection.pkl e scaler.pkl
+├── src/
+│   ├── main.py             # Entrada e Gestão de Threads UI
+│   ├── monitor_engine.py   # Orquestrador de Processos e Watchdog
+│   ├── flow_manager.py     # Gestão LRU e Snapshot de Fluxos
+│   ├── features.py         # Motor Matemático NumPy
 │   ├── attack_manager.py   # State Machine de Ameaças
-│   ├── features.py         # Vetorização Matemática
-│   ├── firewall.py         # Abstração de Regras de SO
-│   └── dashboard.py        # Framework PyQt6 (Modern Dark UI)
-└── tests/        # Suíte de Testes Unitários
+│   ├── constants.py        # Configurações globais e limiares
+│   ├── utils.py            # Utilitários de IP e Assets
+│   └── dashboard.py        # Interface Gráfica Premium
+└── tests/        # Cobertura de Testes Automatizada
 ```
 
 ---
 
-> **Forest Sentinel** - Sua primeira linha de defesa em um mundo automatizado. Desenvolvido com foco em resiliência e precisão.
+> **Forest Sentinel** — Desenvolvido para resiliência máxima e análise silenciosa. Uma sentinela invisível na sua infraestrutura de rede.

@@ -32,7 +32,8 @@ def test_engine_autoblock_toggle():
 
 def test_engine_whitelist_mgmt():
     engine = MonitorEngine()
-    ip = "192.168.1.100"
+    ip = "192.168.1.101" # Usa um IP diferente para evitar conflitos
+    engine.attack_manager.clear_whitelist()
     engine.add_to_whitelist(ip)
     assert engine.attack_manager.is_whitelisted(ip) is True
     

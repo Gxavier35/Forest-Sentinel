@@ -4,6 +4,7 @@ constants.py
 Definições de constantes, limites sistêmicos e status.
 """
 
+import os
 from enum import IntEnum
 from dataclasses import dataclass
 

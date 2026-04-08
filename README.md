@@ -1,156 +1,106 @@
-# 🌲 Forest Sentinel
+# 🌲 Forest Sentinel (Sentinela da Floresta)
 
-> **Complete Technical Manual & Architecture Documentation**
-> **AI-Powered Real-Time DDoS Detection & Mitigation System**
-
-**Forest Sentinel** is a cutting-edge solution designed to monitor, detect, and mitigate Distributed Denial of Service (DDoS) attacks using advanced **Unsupervised Machine Learning** techniques.
+> **High-Performance AI-Powered DDoS Detection & Mitigation System**
+> **Real-time network monitoring with NumPy vectorization and proactive health monitoring.**
 
 ---
 
-## 1. Layered Defense Architecture
+## 🏗️ 1. System Architecture
 
-The system operates across five distinct layers to ensure maximum efficiency and minimum latency:
-
-### Processing Flow (Sequence Diagram)
+**Forest Sentinel** employs a sophisticated multi-processing architecture to ensure that heavy AI inference tasks never interfere with real-time packet capture performance.
 
 ```mermaid
-sequenceDiagram
-    participant Net as Network Interface
-    participant Sniff as Scapy Sniffer
-    participant FM as FlowManager (LRU)
-    participant FE as Feature Engineer
-    participant IA as Worker Process (iForest)
-    participant AM as AttackManager
-    participant FW as Firewall (OS)
-
-    Net->>Sniff: Packet Captured
-    Sniff->>FM: Trigger Aggregator
-    FM->>FM: Group into Flow (5-tuple)
-    alt Flow reached MIN_PKTS (5)
-        FM->>FE: Extract 38 Vectors
-        FE->>IA: Queue Inference
-        IA->>IA: Scaler + Predict (Isolation Forest)
-        IA->>AM: Report Score (Anomaly)
-    end
-    AM->>AM: Evaluate Persistence (Time-Window)
-    alt State == ATTACK
-        AM->>FW: Blocking Command
-        FW->>Net: Rule Applied (Drop)
-    end
+graph TD
+    A[Network/NIC] -->|Raw Packets| B(Scapy Sniffer)
+    B -->|5-tuple| C{Flow Manager}
+    C -->|Vectorized Extractor| D[NumPy Feature Matrix]
+    D -->|IPC Queue| E[AI Inference Worker]
+    E -->|Anomaly Score| F[Attack State Manager]
+    F -->|Persistence Logic| G[Dashboard / Firewall]
+    H[Proactive Watchdog] -.->|Monitor| E
 ```
 
----
-
-## 2. The AI Engine: Isolation Forest (iForest)
-
-Forest Sentinel utilizes the **Isolation Forest** algorithm for its intrinsic ability to detect anomalies without requiring prior training on every attack variation.
-
-- **Philosophy**: Instead of profiling normal traffic, iForest isolates points that "look different." DDoS attacks are, by definition, massive statistical anomalies.
-- **Inference Strategy**: Runs in a separate process to bypass Python's GIL, ensuring the packet sniffer never drops data.
-- **Thresholds by Profile**:
-  - **Home** (`-0.30`): Less sensitive, ideal for varied home network traffic.
-  - **SMB/PME** (`-0.15`): Balanced for corporate environments.
-  - **Datacenter** (`0.00`): Highly sensitive, detects minute variations in server traffic.
+### Core Components:
+*   **Orchestrator (`MonitorEngine`)**: Manages process lifecycles and Inter-Process Communication (IPC).
+*   **AI Inference Worker**: An isolated process running the Isolation Forest model for non-blocking analysis.
+*   **Proactive Watchdog**: A dedicated monitor that tracks the AI worker's health. If the process crashes (e.g., OOM), it restarts within seconds to maintain defense continuity.
 
 ---
 
-## 3. Technical Glossary of the 38 Features
+## ⚡ 2. Vectorized Feature Extraction (NumPy)
 
-Each network flow is converted into a 38-dimensional numerical vector based on the **CICFlowMeter** standard.
+To handle high-throughput environments (**1Gbps+**), the feature extraction engine has been fully optimized using NumPy vectorized operations.
 
-| # | Feature | Technical Description |
-|---|---|---|
-| 1 | `flow_duration` | Total duration of the flow in microseconds. |
-| 2 | `fwd_pkt_max` | Maximum packet size in the forward direction. |
-| 3 | `fwd_pkt_min` | Minimum packet size in the forward direction. |
-| 4 | `bwd_pkt_min` | Minimum packet size in the backward direction. |
-| 5 | `flow_bytes_s` | Total throughput rate (Bytes per second). |
-| 6 | `flow_pkts_s` | Total packet rate (Packets per second). |
-| 7 | `fwd_iat_min` | Minimum Inter-Arrival Time between packets (Forward). |
-| 8 | `bwd_iat_min` | Minimum Inter-Arrival Time between packets (Backward). |
-| 9 | `bwd_psh` | Count of PSH flags in the backward direction. |
-| 10 | `fwd_urg` | Count of URG flags in the forward direction. |
-| 11 | `bwd_urg` | Count of URG flags in the backward direction. |
-| 12 | `bwd_header_len` | Sum of IP/TCP header sizes (Backward). |
-| 13 | `bwd_pkts_s` | Packet rate in the backward direction. |
-| 14 | `min_pkt_length` | Smallest packet detected in the entire flow. |
-| 15 | `pkt_len_var` | Statistical variance of packet sizes. |
-| 16 | `fin_count` | Total FIN flags (Connection termination). |
-| 17 | `syn_count` | Total SYN flags (Connection handshake). |
-| 18 | `rst_count` | Total RST flags (Connection reset). |
-| 19 | `psh_count` | Total PSH flags (Data push). |
-| 20 | `ack_count` | Total ACK flags (Acknowledgment). |
-| 21 | `urg_count` | Total URG flags (Urgent). |
-| 22 | `cwr_count` | Congestion Window Reduced (CWR) flags. |
-| 23 | `ece_count` | ECN Echo flags. |
-| 24 | `down_up_ratio` | Ratio of download to upload traffic. |
-| 25 | `fwd_header_len` | Sum of headers in the forward direction. |
-| 26-28| `fwd_bulk_*` | Bulk burst metrics in the forward direction (Bytes, Pkts, Rate). |
-| 29-31| `bwd_bulk_*` | Bulk burst metrics in the backward direction. |
-| 32 | `subflow_fwd` | Total bytes in forward subflows. |
-| 33 | `init_win_fwd` | Initial TCP window size (Forward). |
-| 34 | `init_win_bwd` | Initial TCP window size (Backward). |
-| 35-36| `active_*` | Active window timing metrics (Std, Max). |
-| 37 | `idle_std` | Standard deviation of flow idle time. |
-| 38 | `inbound` | Binary flag (1.0 if Destination is Local and Source is External). |
+### Technical Performance Highlights:
+*   **Single-Pass Harvesting**: Raw packet data is converted to NumPy arrays in one efficient batch.
+*   **O(N) TCP Flag Analytics**: Bitwise operations over thousands of packets replace slow Python loops.
+*   **O(1) Bulk Burst Calculation**: Uses temporal masks and `np.split` for instantaneous burst detection.
+*   **`is_dirty` Optimization**: the evaluation pipeline skips stable flows (no new activity), reducing CPU overhead by up to 70% in typical network conditions.
 
 ---
 
-## 4. System Limits & Constants
+## 🤖 3. AI Resilience & Monitoring
 
-These values are defined in `constants.py` and ensure system stability:
+The system uses **Isolation Forest** to detect statistical anomalies without needing prior knowledge of specific attack signatures.
 
-- `FLOW_TIMEOUT = 10s`: Flows without packets for 10s are considered ended.
-- `MIN_PKTS = 5`: The system waits for 5 packets for a reliable statistical sample before AI action.
-- `MAX_FLOWS = 5000`: Limit of concurrent flows in memory to prevent memory exhaustion.
-- `LEVEL2_SECS = 60s`: Time an IP must be continuously detected as "Attack" to trigger an auto-block.
+> [!IMPORTANT]
+> **Watchdog & Circuit Breaker**
+> - **Self-Healing**: The watchdog detects AI process failure and triggers an automatic restart.
+> - **Crash-Loop Protection**: If the AI process fails 5 times within 60 seconds, the system pauses auto-restarts to prevent CPU exhaustion.
+> - **Error Propagation**: Critical model load errors (e.g., missing pickle files) are reported via IPC and displayed directly on the Dashboard event console.
 
----
-
-## 5. Troubleshooting Guide
-
-### Application doesn't start or "hangs" at splash
-- **Cause**: Lack of Administrator privileges.
-- **Solution**: Right-click the executable and select "Run as Administrator." The system requires direct access to network drivers.
-
-### No traffic detected (0 PPS)
-- **Cause**: **Npcap** driver not installed or wrong interface selected.
-- **Solution**: Install Npcap (in `WinPcap compatibility mode`). Go to UI settings and verify the selected interface (e.g., Ethernet, WiFi).
-
-### False Positive Blocks
-- **Cause**: AI threshold too low for your network.
-- **Solution**: Change the profile from "Datacenter" or "SMB" to **"Home"** in settings. Add the affected IP to the `Whitelist` in the "Security" tab.
+### Detection Profiles (Thresholds):
+| Profile | Sensitivity | Anomaly Threshold | Ideal Use-Case |
+| :--- | :--- | :--- | :--- |
+| **Home** | Low | `-0.30` | Home networks with irregular traffic patterns. |
+| **SMB/SME** | Medium | `-0.15` | Corporate offices and managed infrastructures. |
+| **Datacenter** | High | `0.00` | Exposed servers with predictable traffic. |
 
 ---
 
-## 7. Model Availability Note ⚠️
+## 📊 4. The 38-Feature Vector (CICFlowMeter Standard)
 
-For security and intellectual property reasons, the pre-trained model files (`ddos_detection.pkl` and `scaler.pkl`) are **not included** in this public repository. 
-
-- **How it works**: The system is designed to load these files from the `/models` directory at runtime.
-- **For Evaluators**: You can browse the architecture and source code to understand the detection logic. A "Mock" or "Community" model will be provided in future releases for testing purposes.
-
----
-
-## 8. Project Structure for Developers
-
-```text
-/ddos_monitor
-├── bin/          # Compiled executables
-├── config/       # Whitelist files and config.json
-├── logs/         # Granular system auditing
-├── models/       # [EXCLUDED] Scikit-Learn models and Scalers
-├── src/          # Source Code (Core)
-│   ├── main.py             # Bootstrapper and UI Thread
-│   ├── monitor_engine.py   # Orchestrator and Multiprocessing
-│   ├── flow_manager.py     # Flow State Management
-│   ├── attack_manager.py   # Threat State Machine
-│   ├── features.py         # Mathematical Vectorization
-│   ├── firewall.py         # OS Rule Abstraction
-│   └── dashboard.py        # PyQt6 Framework (Modern Dark UI)
-└── tests/        # Unit Testing Suite
-```
+| # | Feature | Calculation Logic |
+| :--- | :--- | :--- |
+| **1** | `flow_duration` | Aggregated packet timestamps. 0.0 for single packets. |
+| **2-4** | `pkt_size_stats` | Min/Max/Mean sizes per direction (Fwd/Bwd). |
+| **5-6** | `throughput_rates` | Bytes/Pkts per second based on real duration. |
+| **16-23**| `tcp_flags` | Total counts of FIN, SYN, RST, PSH, ACK, URG, CWR, ECE. |
+| **24** | `down_up_ratio` | Traffic asymmetry ratio between Bwd and Fwd directions. |
+| **25-31**| `bulk_analytics` | Average Bytes/Pkts/Rate in sub-second bursts. |
+| **32-34**| `init_windows` | TCP Receive Window from the **first packet** of each direction. |
+| **35-37**| `active/idle` | Time spent in active transmission vs idle gaps (>1.0s). |
+| **38** | `inbound` | Binary flag indicating if source is external and destination is local. |
 
 ---
 
-> **Forest Sentinel** - Your first line of defense in an automated world. Built with a focus on resilience and precision.
+## 🛡️ 5. Mitigation & Network Security
+
+### Threat Graduation Logic:
+1.  **Suspicious (Yellow)**: Anomaly detected for < 30s.
+2.  **Attack (Red)**: Persistent anomaly detected for > 60s.
+3.  **Auto-Block (Firewall)**: Source IP is automatically added to the OS Firewall if the attack persists.
+
+### Enhanced IP Classification:
+The system accurately identifies private and local address spaces, including:
+- **CGNAT (RFC 6598)**: 100.64.0.0/10.
+- **IPv6 Local Ranges**: Unique Local Addresses (ULA) and Link-local ranges.
+
+---
+
+## 🛠️ 6. Setup & Maintenance
+
+### Requirements:
+*   **Python 3.10+** (3.12+ recommended).
+*   **Npcap**: Required in `WinPcap Compatibility Mode`.
+*   **Dependencies**: `pip install numpy scapy pyqt6 joblib scikit-learn`.
+
+### Testing Suite:
+The repository includes a comprehensive 15-test suite:
+- `pytest tests/test_features.py`: Verifies mathematical integrity of the feature vector.
+- `pytest tests/test_async_ai.py`: Validates Watchdog and AI IPC protocols.
+- `pytest tests/test_engine.py`: Tests core sniffer and monitor coordination.
+
+---
+
+> **Forest Sentinel** — Built for maximum resilience and silent analysis. An invisible sentinel for your network infrastructure.

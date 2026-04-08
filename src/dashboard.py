@@ -31,23 +31,11 @@ from PyQt6.QtWidgets import (
     QMenu,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent
-from PyQt6.QtGui import QColor, QFont, QBrush, QIcon, QPixmap, QPainter, QAction
+from PyQt6.QtGui import QColor, QFont, QBrush, QIcon, QPixmap, QPainter, QAction, QTextCursor
 
-
-class ScapyLoaderThread(QThread):
-    finished = pyqtSignal(list, str)
-
-    def run(self):
-        try:
-            from scapy.all import conf, get_working_ifaces
-
-            ifaces = get_working_ifaces()
-            res = [(i.description if i.description else i.name, i.name) for i in ifaces]
-            self.finished.emit(res, conf.iface.name)
-        except Exception:
-            self.finished.emit([], "")
-
-
+# Local Modules
+import i18n
+from i18n import tr
 from utils import (
     get_root_dir,
     get_timestamp,
@@ -70,10 +58,22 @@ from ui_components import (
 from ui_tabs import OperationTab, ConfigurationTab, BlockedTab, WhitelistTab
 from monitor_engine import MonitorEngine
 from config_manager import load_config, save_config
-import i18n
-from i18n import tr
 
 _ROOT = get_root_dir()
+
+
+class ScapyLoaderThread(QThread):
+    finished = pyqtSignal(list, str)
+
+    def run(self):
+        try:
+            from scapy.all import conf, get_working_ifaces
+
+            ifaces = get_working_ifaces()
+            res = [(i.description if i.description else i.name, i.name) for i in ifaces]
+            self.finished.emit(res, conf.iface.name)
+        except Exception:
+            self.finished.emit([], "")
 
 
 class MainWindow(QMainWindow):
@@ -92,7 +92,6 @@ class MainWindow(QMainWindow):
         self._start_time = datetime.now()
         self._attack_history = collections.deque(maxlen=500)
         self._notify_ips: dict[str, float] = {}  # Throttle de notificações do tray por IP
-        self._last_blocked_keys: set[str] = set() # Cache de IPs bloqueados para evitar refresh visual excessivo
         self._tray_notified = False  # Avisa "rodando no tray" apenas 1x por sessão
         self._tray = None
         self._config = load_config()
@@ -123,9 +122,8 @@ class MainWindow(QMainWindow):
         if not is_admin():
             QTimer.singleShot(1500, self._warn_non_admin)
 
-        # 🚀 AUTO-START: Monitoramento automático opcional através da configuração
-        if self._config.get("autostart", True):
-            QTimer.singleShot(1000, self._auto_start_monitoring)
+        # 🚀 AUTO-START: Monitoramento automático movido para _on_scapy_loaded 
+        # (Garante que a interface já foi carregada do hardware)
 
     def _apply_global_style(self):
         self.setStyleSheet(f"""
@@ -384,18 +382,21 @@ class MainWindow(QMainWindow):
     def _log_event(self, msg: str, color=None):
         ts = get_timestamp()
         color = color or COLORS["text_dim"]
+        # 🚀 Revertido para QTextEdit: Suporta HTML <span> nativamente.
+        # A poda manual é necessária pois QTextEdit não tem setMaximumBlockCount.
         self.op_tab.log_edit.append(
             f'<span style="color:{COLORS["text_dim"]}">[{ts}]</span> '
             f'<span style="color:{color}">{msg}</span>'
         )
-        cursor = self.op_tab.log_edit.textCursor()
-        if self.op_tab.log_edit.document().blockCount() > 500:
+        
+        doc = self.op_tab.log_edit.document()
+        if doc.blockCount() > 500:
+            cursor = self.op_tab.log_edit.textCursor()
             cursor.movePosition(cursor.MoveOperation.Start)
-            cursor.movePosition(
-                cursor.MoveOperation.NextBlock, cursor.MoveMode.KeepAnchor
-            )
+            cursor.select(cursor.SelectionType.BlockUnderCursor)
             cursor.removeSelectedText()
-            self.op_tab.log_edit.moveCursor(cursor.MoveOperation.End)
+            cursor.deleteChar() # Remove o line break residual
+
 
     def _on_flow_batch_ready(self, top_50: list, total_active: int, total_attacks: int):
         """Recebe o pacote completo processado pelo Orchestrator. Paint puro otimizado."""
@@ -682,9 +683,6 @@ class MainWindow(QMainWindow):
             if ip:
                 self._engine.unblock_ip(ip)
 
-    def _unblock_ip(self, ip: str):
-        self._engine.unblock_ip(ip)
-
     def _save_settings(self):
         self._save_current_settings()
         self._log_event(tr("msg_settings_saved"), COLORS["success"])
@@ -784,9 +782,20 @@ class MainWindow(QMainWindow):
         for desc, name in res:
             combo.addItem(desc, name)
 
-        idx = combo.findData(default_name)
+        # 1. Prioriza a interface que o usuário salvou no config
+        saved_iface = self._config.get("interface")
+        idx = combo.findData(saved_iface) if saved_iface else -1
+
+        # 2. Se não houver salva (ou for inválida), usa a padrão detectada pelo Scapy
+        if idx < 0:
+            idx = combo.findData(default_name)
+
         if idx >= 0:
             combo.setCurrentIndex(idx)
+
+        # 3. 🚀 Início automático agora é SEGURO: a UI já possui os dados carregados
+        if self._config.get("autostart", True):
+            self._auto_start_monitoring()
 
     def _setup_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():

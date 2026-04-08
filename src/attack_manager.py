@@ -8,7 +8,6 @@ Determina limiares de bloqueio, tracking temporal e mantém a Whitelist.
 import time
 import ipaddress
 import threading
-from datetime import datetime
 import os
 import logging
 from utils import get_root_dir, get_timestamp, get_proto_name, format_flow_key
@@ -37,66 +36,56 @@ class AttackStateManager:
         self._blocked_status: dict[str, dict] = {}
         self._logged_attacks_engine = set()
 
-        self._whitelist: list[ipaddress.IPv4Network] = []
+        self._whitelist: set[ipaddress.IPv4Network | ipaddress.IPv6Network] = set()
         self._whitelist_ips: set[str] = set()
         self._load_whitelist()
 
     # --- Whitelist Management --- #
 
     def _load_whitelist(self):
-        self._whitelist = []
-        self._whitelist_ips = set()
-        if not os.path.exists(WHITELIST_FILE):
-            return
-        try:
-            with open(WHITELIST_FILE, "r") as f:
-                for line in f:
-                    entry = line.strip()
-                    if not entry or entry.startswith("#"):
-                        continue
-                    try:
-                        if (
-                            "/" not in entry
-                            or entry.endswith("/32")
-                            or entry.endswith("/128")
-                        ):
-                            ip_exact = entry.split("/")[0]
-                            ipaddress.ip_address(ip_exact)
-                            self._whitelist_ips.add(ip_exact)
-                        else:
-                            self._whitelist.append(
-                                ipaddress.ip_network(entry, strict=False)
+        with self._lock:
+            self._whitelist = set()
+            self._whitelist_ips = set()
+            if not os.path.exists(WHITELIST_FILE):
+                return
+            try:
+                with open(WHITELIST_FILE, "r") as f:
+                    for line in f:
+                        entry = line.strip()
+                        if not entry or entry.startswith("#"):
+                            continue
+                        try:
+                            net = ipaddress.ip_network(entry, strict=False)
+                            self._whitelist.add(net)
+                            if net.num_addresses == 1:
+                                self._whitelist_ips.add(str(net.network_address))
+                        except ValueError:
+                            self.logger.warning(
+                                f"IP/Rede inválida na whitelist: {entry}"
                             )
-                    except ValueError:
-                        self.logger.warning(
-                            f"IP/Rede inválida na whitelist (bloqueado): {entry}"
-                        )
-        except Exception as e:
-            self.logger.error(f"Erro ao ler whitelist: {e}")
+            except Exception as e:
+                self.logger.error(f"Erro ao ler whitelist: {e}")
 
     def _save_whitelist(self):
         os.makedirs(os.path.dirname(WHITELIST_FILE), exist_ok=True)
         try:
             with open(WHITELIST_FILE, "w") as f:
-                for net in self._whitelist:
+                # Ordena para manter o arquivo determinístico
+                for net in sorted(self._whitelist, key=lambda x: str(x)):
                     f.write(str(net) + "\n")
         except Exception as e:
             self.logger.error(f"Erro ao salvar whitelist: {e}")
 
     def add_to_whitelist(self, val: str) -> bool:
         val = val.strip()
+        if not val: return False
         try:
-            if "/" not in val or val.endswith("/32") or val.endswith("/128"):
-                parsed_ip = ipaddress.ip_address(val.split("/")[0])
-                net = ipaddress.ip_network(str(parsed_ip))
-            else:
-                net = ipaddress.ip_network(val, strict=False)
-
+            net = ipaddress.ip_network(val, strict=False)
             with self._lock:
                 if net not in self._whitelist:
-                    self._whitelist.append(net)
-                    if "/" not in val or val.endswith("/32") or val.endswith("/128"):
-                        self._whitelist_ips.add(val.split("/")[0])
+                    self._whitelist.add(net)
+                    if net.num_addresses == 1:
+                        self._whitelist_ips.add(str(net.network_address))
                     self._save_whitelist()
                     return True
         except ValueError:
@@ -104,12 +93,30 @@ class AttackStateManager:
         return False
 
     def remove_from_whitelist(self, val: str) -> bool:
+        val = val.strip()
+        if not val: return False
         try:
             net = ipaddress.ip_network(val, strict=False)
             with self._lock:
+                # 1. Tentar remoção por objeto (mais rápido)
                 if net in self._whitelist:
                     self._whitelist.remove(net)
-                    self._whitelist_ips.discard(val)
+                    if net.num_addresses == 1:
+                        self._whitelist_ips.discard(str(net.network_address))
+                    self._save_whitelist()
+                    return True
+                
+                # 2. Fallback por comparação de string (casos de normalização/objetos diferentes)
+                to_remove = None
+                for ex in self._whitelist:
+                    if str(ex) == str(net):
+                        to_remove = ex
+                        break
+                
+                if to_remove:
+                    self._whitelist.remove(to_remove)
+                    if to_remove.num_addresses == 1:
+                        self._whitelist_ips.discard(str(to_remove.network_address))
                     self._save_whitelist()
                     return True
         except ValueError:
@@ -123,7 +130,9 @@ class AttackStateManager:
             self._save_whitelist()
 
     def get_whitelist_items(self) -> list[str]:
-        return [str(net) for net in self._whitelist]
+        # Retorna lista ordenada para consistência na UI
+        with self._lock:
+            return sorted([str(net) for net in self._whitelist])
 
     def is_whitelisted(self, src_ip: str) -> bool:
         with self._lock:
@@ -152,17 +161,10 @@ class AttackStateManager:
             for ip in expired_blocks:
                 self._blocked_status.pop(ip, None)
 
-    def evaluate_flows(
-        self, flow_work_list: list[tuple], autoblock_enabled: bool
-    ) -> tuple[
-        list["FlowResult"],
-        list[tuple[str, float]],
-        dict[str, tuple["DetectionStatus", float]],
-        list[str],
-    ]:
+    def evaluate_flows(self, flow_work_list: list, autoblock_enabled: bool = True) -> list[FlowResult]:
         """
-        Calcula as transições da UI (UI Results) e os IPs candidatos ao firewall.
-        Retorna (ui_results, to_block, to_log, to_norm)
+        Avalia cada fluxo buscando ameaças por limiar e persistência.
+        Retorna lista de resultados formatados para a UI.
         """
         now = time.time()
         ui_results = []
@@ -171,13 +173,13 @@ class AttackStateManager:
         to_log = {}
         active_ips = set()
         current_cycle_attacks = {}
-        for fk, rec, pkts_snap, ls_snap, la_snap, lr_snap in flow_work_list:
+
+        for fk, rec, pkts_snap, ls_snap, la_snap, lr_snap, is_dirty in flow_work_list:
             src_ip, dst_ip, src_port, dst_port, proto = fk
             active_ips.add(src_ip)
 
-            if not pkts_snap:
-                continue
-
+            # Otimização: Se o fluxo não teve atividade nova, pegamos os resultados estáveis
+            # Mas ainda precisamos retornar o FlowResult para a UI não "parcar".
             lr_fresh = rec.last_result
             label, confidence, is_attack = (
                 lr_fresh if lr_fresh else (DetectionStatus.NORMAL, 0.0, False)
@@ -187,8 +189,13 @@ class AttackStateManager:
             if self.is_whitelisted(src_ip):
                 is_attack, label = False, DetectionStatus.NORMAL
 
-            dur_secs = max(0.001, pkts_snap[-1]["time"] - pkts_snap[0]["time"])
-            pkts_per_sec = len(pkts_snap) / dur_secs
+            # Reset do dirty flag: a análise de um ciclo "consome" a novidade do fluxo
+            rec.is_dirty = False
+
+            # Otimização Crítica: Se não há pacotes novos, as estatísticas de limiar não mudaram.
+            # No entanto, ainda precisamos calcular a UI result para manter o fluxo visível.
+            dur_secs = float(pkts_snap[-1]["time"] - pkts_snap[0]["time"]) if len(pkts_snap) > 1 else 0.0
+            pkts_per_sec = len(pkts_snap) / dur_secs if dur_secs > 0 else 0.0
 
             is_final_attack = False
             if is_attack:
@@ -255,7 +262,7 @@ class AttackStateManager:
                 self._logged_attacks_engine.add(ip)
 
             # 3. Sincroniza tracking de IPs ativos de forma robusta
-            self.get_stale_from_tracking(active_ips)
+            self._get_stale_from_tracking_locked(active_ips)
 
         return ui_results, to_block, to_log, to_norm
 
@@ -300,12 +307,16 @@ class AttackStateManager:
             return dict(self._blocked_status)
 
     def get_stale_from_tracking(self, active_flow_ips) -> list:
-        """Limpa o tracking de IPs que não possuem mais fluxos ativos."""
+        """Versão pública com lock fixo."""
         with self._lock:
-            # Otimização: Converter para set para busca O(1)
-            active_set = set(active_flow_ips)
-            stale = [ip for ip in self._attack_persist if ip not in active_set]
-            for ip in stale:
-                self._attack_persist.pop(ip, None)
-                self._last_seen_attack.pop(ip, None) # Limpar também last_seen
-            return stale
+            return self._get_stale_from_tracking_locked(active_flow_ips)
+
+    def _get_stale_from_tracking_locked(self, active_flow_ips) -> list:
+        """Limpa o tracking de IPs que não possuem mais fluxos ativos (Assume lock adquirido)."""
+        # Otimização: Converter para set para busca O(1)
+        active_set = set(active_flow_ips)
+        stale = [ip for ip in self._attack_persist if ip not in active_set]
+        for ip in stale:
+            self._attack_persist.pop(ip, None)
+            self._last_seen_attack.pop(ip, None)
+        return stale

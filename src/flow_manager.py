@@ -8,7 +8,6 @@ Responsável por alocar fluxos, realizar packet callbacks puros e gerenciar evic
 import time
 import collections
 import threading
-import itertools
 import logging
 
 import numpy as np
@@ -36,10 +35,12 @@ class FlowRecord:
         self.last_analyzed = 0.0
         self.last_analyzed_count = 0
         self.last_result = None  # (label, confidence, is_attack)
+        self.is_dirty = True     # Indica se houve atividade nova desde a última detecção de limites
 
     def add(self, pkt_info: dict):
         self.packets.append(pkt_info)
         self.last_seen = time.time()
+        self.is_dirty = True
 
 
 class FlowManager:
@@ -148,17 +149,32 @@ class FlowManager:
         except Exception as e:
             self.logger.debug(f"Pkt process error: {e}")
 
-    def cleanup_memory(self):
-        """Remove fluxos obsoletos a mais de FLOW_TIMEOUT sem interação."""
+    def cleanup_memory(self, max_to_clean=500):
+        """
+        Remove fluxos obsoletos de forma incremental.
+        Aproveita o OrderedDict (LRU) para Early Break: para assim que encontrar um fluxo ativo.
+        """
         now = time.time()
-        to_remove = []
+        keys_to_del = []
+        
         with self._lock:
-            for k, rec in self._flows.items():
+            # OrderedDict.items() mantém a ordem de inserção/move_to_end.
+            # O início da lista contém os fluxos mais antigos (Least Recently Used).
+            for i, (k, rec) in enumerate(self._flows.items()):
+                if i >= max_to_clean:
+                    break
+                    
                 if (now - rec.last_seen) > FLOW_TIMEOUT:
-                    to_remove.append(k)
-            for k in to_remove:
+                    keys_to_del.append(k)
+                else:
+                    # Early Break 🚀: Se este fluxo não expirou, nenhum dos
+                    # seguintes (que são mais novos) expirou também.
+                    break
+            
+            for k in keys_to_del:
                 self._flows.pop(k, None)
-        return to_remove
+                
+        return keys_to_del
 
     def get_flows_for_analysis(self) -> tuple:
         """
@@ -184,6 +200,7 @@ class FlowManager:
                             rec.last_seen,
                             rec.last_analyzed,
                             rec.last_result,
+                            rec.is_dirty
                         )
                     )
 
@@ -192,7 +209,7 @@ class FlowManager:
     def batch_extract_features(self, flow_work_list) -> tuple:
         """Gera vetores para análise pela IA e aplica throttling de desempenho sazonal."""
         need_analysis = []
-        for fk, rec, pkts_snap, ls_snap, la_snap, lr_snap in flow_work_list:
+        for fk, rec, pkts_snap, ls_snap, la_snap, lr_snap, is_dirty in flow_work_list:
             if len(pkts_snap) < MIN_PKTS:
                 continue
             pkts_len = len(pkts_snap)

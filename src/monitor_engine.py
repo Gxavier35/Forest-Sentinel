@@ -7,17 +7,15 @@ Gera eventos de UI via Qt Signals.
 """
 
 import os
-import sys
 import time
 import joblib
 import threading
 import logging
 import traceback
+import queue
 import multiprocessing as mp
 from datetime import datetime
-
-import queue
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer
+from PyQt6.QtCore import QObject, pyqtSignal
 
 import numpy as np
 
@@ -52,7 +50,7 @@ def _ai_inference_worker(in_queue, out_queue, model_path, scaler_path):
         model = joblib.load(model_path)
         scaler = joblib.load(scaler_path)
     except Exception as e:
-        out_queue.put(("ERROR", str(e)))
+        out_queue.put((-1, "ERROR", str(e)))
         return
 
     while True:
@@ -126,11 +124,20 @@ class MonitorEngine(QObject):
         self._auto_block_enabled = False
         self._manual_autoblock: bool | None = None
         self._last_cleanup_time = 0.0
-        self._last_ai_restart = 0.0
+
+        # Respostas da IA com correlação por req_id para evitar condições de corrida
+        self._ai_results = {}
+        self._ai_lock = threading.Lock()
+        # {req_id: (flow_keys, timestamp)}
+        self._ai_pending_tasks = {}
+        self._ai_collector_thread = None
+        self.MAX_AI_IN_FLIGHT = 3
 
         self._in_q = mp.Queue()
         self._out_q = mp.Queue()
         self._ai_proc = None
+        self._ai_restart_count = 0
+        self._ai_last_restart_time = 0.0
 
         self.firewall = get_firewall_manager()
         self.logger = logging.getLogger("Engine")
@@ -270,19 +277,62 @@ class MonitorEngine(QObject):
 
         return ok
 
-    def _start_ai_process(self):
-        # Reinicia se o processo não existir ou não estiver vivo
-        if self._ai_proc and self._ai_proc.is_alive():
+    def _start_ai_process(self, force=False):
+        # Reinicia se o processo não existir, não estiver vivo ou for forçado
+        if not force and self._ai_proc and self._ai_proc.is_alive():
             return
 
-        self.logger.info("📦 Motor de IA: Iniciando processo worker...")
+        now = time.time()
+        # Crash loop protection: Se tentou reiniciar mais de 5 vezes em 1 minuto, para.
+        if (now - self._ai_last_restart_time) < 60.0:
+            if self._ai_restart_count >= 5:
+                self.logger.error("🚫 Motor de IA: Muitas falhas seguidas. Abortando reinício automático.")
+                self.error_occurred.emit("Falha crítica no Motor de IA (Crash Loop). Verifique os logs.")
+                return
+            self._ai_restart_count += 1
+        else:
+            # Reseta o contador após 1 minuto de estabilidade
+            self._ai_restart_count = 1
+            self._ai_last_restart_time = now
+
+        msg = "📦 Motor de IA: " + ("Reiniciando..." if force else "Iniciando...")
+        self.logger.info(msg)
+        self.status_changed.emit(f"⚙️ {msg}")
+
         self._ai_proc = mp.Process(
             target=_ai_inference_worker,
             args=(self._in_q, self._out_q, MODEL_PATH, SCALER_PATH),
             daemon=True,
         )
         self._ai_proc.start()
-        self._last_ai_restart = time.time()
+
+        if self._ai_collector_thread is None or not self._ai_collector_thread.is_alive():
+            self._ai_collector_thread = threading.Thread(
+                target=self._ai_response_collector, daemon=True
+            )
+            self._ai_collector_thread.start()
+
+    def _ai_response_collector(self):
+        """Thread que consome da out_q continuamente para evitar bloqueios no ciclo principal."""
+        while self._running:
+            try:
+                # Timeout bloqueante pequeno para não fritar CPU
+                resp_id, status, data = self._out_q.get(timeout=0.5)
+                
+                # Caso especial: Erro global do worker durante o startup ou crash
+                if resp_id == -1 and status == "ERROR":
+                    self.logger.error(f"Erro crítico no Motor de IA: {data}")
+                    self.error_occurred.emit(f"Falha no Motor de IA: {data}")
+                    continue
+
+                with self._ai_lock:
+                    self._ai_results[resp_id] = (status, data)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                if self._running:
+                    self.logger.error(f"Erro no coletor de IA: {e}")
+                time.sleep(1)
 
     # --- Ciclo de Vida do Orquestrador Principal ---
 
@@ -416,10 +466,19 @@ class MonitorEngine(QObject):
                         self._baseline_pps = (0.90 * self._baseline_pps) + (0.10 * pps)
 
                 self._evaluate_threat_pipeline()
+                
+                # Watchdog Proativo 🛡: Verifica se o processo de IA morreu e reinicia
+                if self._running and (not self._ai_proc or not self._ai_proc.is_alive()):
+                    self.logger.warning("⚠️ Motor de IA parou inesperadamente. Tentando reiniciar...")
+                    self._start_ai_process(force=True)
 
+                # Manutenção Incremental 🧹: Limpa fluxos expirados a cada ciclo (1s)
+                # O limite de 500 itens por ciclo garante que não haja "soluços" de CPU.
+                self.flow_manager.cleanup_memory(max_to_clean=500)
+
+                # Limpeza de bloqueios antigos (>24h) permanece a cada 60s
                 if now - self._last_cleanup_time >= 60.0:
                     self._last_cleanup_time = now
-                    self.flow_manager.cleanup_memory()  # limpa fluxos expirados
                     self.attack_manager.cleanup_memory()
 
             except Exception as e:
@@ -438,13 +497,15 @@ class MonitorEngine(QObject):
         # 2. Expirar os mortos
         self.flow_manager.remove_flows(expired)
 
-        # 3. Extrair e computar features via worker IA
+        # 3. Extrair e submeter features via worker IA (ASSÍNCRONO)
         to_analyze_keys, to_analyze_feats = self.flow_manager.batch_extract_features(
             flow_work_list
         )
         if to_analyze_feats:
-            batch_results = self._predict_batch(to_analyze_feats)
-            self.flow_manager.apply_batch_results(to_analyze_keys, batch_results, now)
+            self._predict_batch_async(to_analyze_keys, to_analyze_feats)
+
+        # 3b. Coletar resultados de predições anteriores que já terminaram
+        self._process_completed_ai_tasks(now)
 
         # 4. Avaliacao de Ameaças
         ui_results, to_block, to_log, to_norm = self.attack_manager.evaluate_flows(
@@ -478,51 +539,76 @@ class MonitorEngine(QObject):
 
         self.flow_batch_ready.emit(top_50, total_active, total_attacks)
 
+    def _predict_batch_async(self, keys: list, feats_list: list[np.ndarray]):
+        """Submete uma requisição de IA de forma não bloqueante com limite de concorrência."""
+        if not feats_list:
+            return
+
+        try:
+            with self._ai_lock:
+                # 1. Limpeza de tasks antigas (timeout de 10s) para liberar slots
+                now = time.time()
+                stale_reqs = [rid for rid, (_, ts) in self._ai_pending_tasks.items() if (now - ts) > 10.0]
+                for rid in stale_reqs:
+                    self._ai_pending_tasks.pop(rid, None)
+                    self._ai_results.pop(rid, None)
+
+                # 2. Verifica limite de "em vôo"
+                if len(self._ai_pending_tasks) >= self.MAX_AI_IN_FLIGHT:
+                    self.logger.debug("IA: Limite de requisições pendentes atingido. Pulando este ciclo.")
+                    return
+
+                req_id = time.time_ns()
+                threshold = self._ai_thresholds.get(self._profile, -0.15)
+                feats_combined = np.array(feats_list)
+
+                self._ai_pending_tasks[req_id] = (keys, time.time())
+
+                self._in_q.put((req_id, feats_combined, threshold))
+        except Exception as e:
+            self.logger.error(f"Erro ao submeter tarefa para IA: {e}")
+
+    def _process_completed_ai_tasks(self, now):
+        """Verifica se há resultados no mapa de resultados e os aplica aos fluxos correspondentes."""
+        completed_ids = []
+        
+        with self._ai_lock:
+            for req_id in list(self._ai_pending_tasks.keys()):
+                if req_id in self._ai_results:
+                    completed_ids.append(req_id)
+
+        for rid in completed_ids:
+            with self._ai_lock:
+                keys, _ = self._ai_pending_tasks.pop(rid)
+                status, data = self._ai_results.pop(rid)
+
+            if status == "OK":
+                if len(data) == len(keys):
+                    self.flow_manager.apply_batch_results(keys, data, now)
+                else:
+                    self.logger.error(f"Dessincronização IA assíncrona no ID {rid}")
+            else:
+                self.logger.error(f"Erro retornado pelo worker IA (ID {rid}): {data}")
+
     def _predict_batch(
         self, feats_list: list[np.ndarray]
     ) -> list[tuple["DetectionStatus", float, bool]]:
-        """Gerencia as filas do processo da IA assíncrona com isolamento por req_id."""
-        if not feats_list:
-            return []
-
-        # Watchdog: Se o processo morreu, reinicia imediatamente
-        if not self._ai_proc or not self._ai_proc.is_alive():
-            self._start_ai_process()
-            # Pequena pausa para o processo carregar o modelo no primeiro arranque
-            time.sleep(0.5)
-
+        """
+        [DEPRECATED/TESTING]: Mantido apenas para compatibilidade de testes unitários 
+        ou chamadas síncronas raras. Para o loop principal de realtime, use _predict_batch_async.
+        """
+        # Se for chamado de forma síncrona, faz um mini-loop de espera (como antes, mas usando o novo coletor)
+        if not feats_list: return []
+        req_id = time.time_ns()
         try:
-            req_id = time.time_ns()
-            threshold = self._ai_thresholds.get(self._profile, -0.15)
-            feats_combined = np.array(feats_list)
-
-            # Envia requisição
-            self._in_q.put((req_id, feats_combined, threshold))
-
-            # Aguarda pela resposta correspondente ao ID atual
-            # Retries para o caso de mensagens de timeout anteriores estarem na frente
-            for _ in range(5): 
-                try:
-                    resp_id, status, data = self._out_q.get(timeout=1.5)
-                    
-                    if resp_id != req_id:
-                        self.logger.debug(f"IA: Ignorando resposta antiga {resp_id}")
-                        continue  # Descarta resposta de requisição anterior (stale)
-
-                    if status == "OK":
-                        if len(data) != len(feats_list):
-                            self.logger.error("Dessincronização IA: tamanho da resposta inválido.")
-                            return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)
-                        return data
-                    else:
-                        self.logger.error(f"Erro no worker IA: {data}")
-                        break
-                except queue.Empty:
-                    continue  # Tenta novamente até o limite de retries
-
-            self.logger.warning("IA: Timeout ou erro após retitativas.")
-            return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)
-
+            self._in_q.put((req_id, np.array(feats_list), self._ai_thresholds.get(self._profile, -0.15)))
+            start = time.time()
+            while (time.time() - start) < 3.0:
+                with self._ai_lock:
+                    if req_id in self._ai_results:
+                        status, data = self._ai_results.pop(req_id)
+                        return data if status == "OK" else []
+                time.sleep(0.1)
         except Exception as e:
-            self.logger.error(f"Erro fatal na comunicação com worker IA: {e}")
-            return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)
+            self.logger.debug(f"Sync AI prediction error: {e}")
+        return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)

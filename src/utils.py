@@ -41,10 +41,23 @@ def format_flow_key(flow_tuple: tuple) -> str:
 
 
 def is_private_ip(ip: str) -> bool:
-    """Verifica se um endereço IP pertence a uma rede privada (RFC 1918)."""
+    """
+    Verifica se um endereço IP pertence a uma rede privada, local ou compartilhada (CGNAT).
+    Abrange RFC 1918, RFC 6598 (CGNAT) e IPv6 local.
+    """
     try:
         ip_obj = ipaddress.ip_address(ip)
-        return ip_obj.is_private
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            return True
+        
+        # Verificação explícita para CGNAT (100.64.0.0/10) se o ip_obj.is_private falhar
+        if ip_obj.version == 4:
+            # 100.64.0.0 até 100.127.255.255
+            octets = list(ip_obj.packed)
+            if octets[0] == 100 and (64 <= octets[1] <= 127):
+                return True
+                
+        return False
     except ValueError:
         return False
 
