@@ -32,10 +32,10 @@ graph TD
 To handle high-throughput environments (**1Gbps+**), the feature extraction engine has been fully optimized using NumPy vectorized operations.
 
 ### Technical Performance Highlights:
-*   **Single-Pass Harvesting**: Raw packet data is converted to NumPy arrays in one efficient batch.
-*   **O(N) TCP Flag Analytics**: Bitwise operations over thousands of packets replace slow Python loops.
-*   **O(1) Bulk Burst Calculation**: Uses temporal masks and `np.split` for instantaneous burst detection.
-*   **`is_dirty` Optimization**: the evaluation pipeline skips stable flows (no new activity), reducing CPU overhead by up to 70% in typical network conditions.
+*   **O(1) Bulk Burst Calculation**: Uses temporal masks for instantaneous burst detection.
+*   **`is_dirty` Flow Filtering**: Evaluation pipeline skips stable flows (no new activity), reducing CPU overhead by up to 70% in typical network conditions.
+*   **Single-Pass Loop Architecture**: Threat evaluation and UI data generation now occur in a unified O(N) cycle, minimizing list iterations.
+*   **Optimized Batch Inference**: Uses `np.vstack` for high-performance memory allocation when sending features to the AI Worker.
 
 ---
 
@@ -81,10 +81,17 @@ The system uses **Isolation Forest** to detect statistical anomalies without nee
 2.  **Attack (Red)**: Persistent anomaly detected for > 60s.
 3.  **Auto-Block (Firewall)**: Source IP is automatically added to the OS Firewall if the attack persists.
 
-### Enhanced IP Classification:
-The system accurately identifies private and local address spaces, including:
-- **CGNAT (RFC 6598)**: 100.64.0.0/10.
 - **IPv6 Local Ranges**: Unique Local Addresses (ULA) and Link-local ranges.
+- **Defensive Feature Check**: Zeroed vector fallback for empty flows to prevent calculation errors.
+
+---
+
+## 🚀 6. Future: Native Engine Roadmap (Rust)
+
+To scale beyond 10Gbps+ for datacenter environments, a strategic migration to a native core is planned:
+- **Hybrid Data Plane**: Dynamic switching between Python core (Home/SME) and Rust core (Datacenter).
+- **Kernel Bypass**: Planned support for XDP (eBPF) on Linux and Npcap Direct on Windows.
+- **Zero-Copy Architecture**: Eliminating the overhead of Python's GIL for core packet harvesting.
 
 ---
 
@@ -96,7 +103,7 @@ The system accurately identifies private and local address spaces, including:
 *   **Dependencies**: `pip install numpy scapy pyqt6 joblib scikit-learn`.
 
 ### Testing Suite:
-The repository includes a comprehensive 15-test suite:
+The repository includes a comprehensive 16-test suite:
 - `pytest tests/test_features.py`: Verifies mathematical integrity of the feature vector.
 - `pytest tests/test_async_ai.py`: Validates Watchdog and AI IPC protocols.
 - `pytest tests/test_engine.py`: Tests core sniffer and monitor coordination.

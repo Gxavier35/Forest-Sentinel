@@ -560,7 +560,7 @@ class MonitorEngine(QObject):
 
                 req_id = time.time_ns()
                 threshold = self._ai_thresholds.get(self._profile, -0.15)
-                feats_combined = np.array(feats_list)
+                feats_combined = np.vstack(feats_list)
 
                 self._ai_pending_tasks[req_id] = (keys, time.time())
 

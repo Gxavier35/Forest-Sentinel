@@ -46,7 +46,7 @@ def compute_features(flow_key: tuple, packets: list) -> np.ndarray:
     """
     Calcula as 38 features de um fluxo de rede usando vetorização NumPy.
     """
-    if not packets:
+    if not packets or len(packets) == 0:
         return np.zeros(38, dtype=np.float64)
 
     # --- Estágio 1: Extração de Dados (Harvesting) ---

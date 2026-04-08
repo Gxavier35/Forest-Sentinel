@@ -37,3 +37,9 @@ def test_compute_features_udp():
     # TCP-specific features should be 0 for UDP
     # fwd_psh_flags is at index 14
     assert features[14] == 0
+
+def test_compute_features_empty():
+    key = ("1.1.1.1", "2.2.2.2", 1234, 80, 6)
+    features = compute_features(key, [])
+    assert features.shape == (38,)
+    assert np.all(features == 0)

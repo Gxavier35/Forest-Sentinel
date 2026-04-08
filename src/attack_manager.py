@@ -161,78 +161,75 @@ class AttackStateManager:
             for ip in expired_blocks:
                 self._blocked_status.pop(ip, None)
 
-    def evaluate_flows(self, flow_work_list: list, autoblock_enabled: bool = True) -> list[FlowResult]:
+    def evaluate_flows(self, flow_work_list: list, autoblock_enabled: bool = True) -> tuple[list[FlowResult], list, dict, list]:
         """
-        Avalia cada fluxo buscando ameaças por limiar e persistência.
-        Retorna lista de resultados formatados para a UI.
+        Ponto de entrada único para orquestrar a avaliação de ameaças e a geração de resultados para a UI.
         """
         now = time.time()
-        ui_results = []
         to_block = []
         to_norm = []
         to_log = {}
+        ui_results = []
         active_ips = set()
         current_cycle_attacks = {}
+        ts = get_timestamp()
 
+        # O loop abaixo utiliza uma arquitetura de dois estágios para eficiência:
+        # Estágio 1: Avaliação Técnica (Lógica de detecção, persistência e IA)
+        # Estágio 2: Preparação de UI (Conversão rápida para objetos FlowResult)
         for fk, rec, pkts_snap, ls_snap, la_snap, lr_snap, is_dirty in flow_work_list:
-            src_ip, dst_ip, src_port, dst_port, proto = fk
+            src_ip, _, _, _, proto = fk
             active_ips.add(src_ip)
-
-            # Otimização: Se o fluxo não teve atividade nova, pegamos os resultados estáveis
-            # Mas ainda precisamos retornar o FlowResult para a UI não "parcar".
-            lr_fresh = rec.last_result
-            label, confidence, is_attack = (
-                lr_fresh if lr_fresh else (DetectionStatus.NORMAL, 0.0, False)
-            )
-            proto_name = get_proto_name(proto)
-
-            if self.is_whitelisted(src_ip):
-                is_attack, label = False, DetectionStatus.NORMAL
-
-            # Reset do dirty flag: a análise de um ciclo "consome" a novidade do fluxo
-            rec.is_dirty = False
-
-            # Otimização Crítica: Se não há pacotes novos, as estatísticas de limiar não mudaram.
-            # No entanto, ainda precisamos calcular a UI result para manter o fluxo visível.
-            dur_secs = float(pkts_snap[-1]["time"] - pkts_snap[0]["time"]) if len(pkts_snap) > 1 else 0.0
-            pkts_per_sec = len(pkts_snap) / dur_secs if dur_secs > 0 else 0.0
-
-            is_final_attack = False
-            if is_attack:
-                with self._lock:
-                    start_time = self._attack_persist.get(src_ip, now)
-                dur = now - start_time
-
-                if dur >= LEVEL2_SECS:
-                    label, is_final_attack = DetectionStatus.ATTACK, True
-                    if src_ip not in self._logged_attacks_engine:
-                        to_log[src_ip] = (label, confidence)
-                elif dur >= LEVEL1_SECS:
-                    label, is_final_attack = DetectionStatus.SUSPICIOUS, False
-                else:
-                    label, is_final_attack = DetectionStatus.NORMAL, False
-
-                current_cycle_attacks[src_ip] = pkts_per_sec
-
-            # Passa a responsabilidade de formatter para a UI / Orchestrator.
-            # Retorna raw values padronizados como Dataclass.
+            
+            # --- Fase 1: Avaliação Técnica (Ocorre se houver tráfego novo) ---
+            # Calculamos a duração real do snapshot uma única vez para PPS e UI
+            dur = float(pkts_snap[-1]["time"] - pkts_snap[0]["time"]) if len(pkts_snap) > 1 else 0.0
+            pkts_per_sec = len(pkts_snap) / dur if dur > 0 else 0.0
+            is_attack_now = False 
+            
+            if is_dirty or la_snap == 0:
+                # Caso o fluxo seja novo ou tenha mudado, reavaliamos a ameaça
+                res_lbl, res_conf, res_attack, final_log = self._evaluate_single_threat(
+                    src_ip, lr_snap, pkts_per_sec, now
+                )
+                
+                label, confidence = res_lbl, res_conf
+                if res_attack:
+                    current_cycle_attacks[src_ip] = pkts_per_sec
+                    is_attack_now = True
+                if final_log:
+                    to_log[src_ip] = (res_lbl, res_conf)
+            else:
+                # Fluxo estável: Reutilizamos o último resultado da IA para economizar CPU
+                label, confidence, is_attack_now = lr_snap
+                if is_attack_now:
+                    current_cycle_attacks[src_ip] = pkts_per_sec
+            
+            # --- Fase 2: Geração de Dados para UI (Consolidação) ---
             ui_results.append(
                 FlowResult(
                     flow_tuple=fk,
                     flow_key=format_flow_key(fk),
                     src_ip=src_ip,
                     label=label.name,
-                    is_attack=is_final_attack,
+                    is_attack=is_attack_now,
                     confidence=confidence,
                     pkts=len(pkts_snap),
-                    duration=dur_secs,
-                    proto=proto_name,
-                    time=get_timestamp(),
+                    duration=dur,
+                    proto=get_proto_name(proto),
+                    time=ts,
                 )
             )
+            
+            # Resetamos o dirty flag: este ciclo de análise está concluído para este fluxo
+            rec.is_dirty = False
 
-        # 1. Atualizar persistência
+        # 2. Gerenciamento de persistência e firewall (Lock fixo)
         with self._lock:
+            # Sincroniza tracking de IPs ativos
+            self._get_stale_from_tracking_locked(active_ips)
+
+            # Persistência de ataques ativos
             for s_ip, pps in current_cycle_attacks.items():
                 if s_ip not in self._attack_persist:
                     self._attack_persist[s_ip] = now
@@ -245,26 +242,47 @@ class AttackStateManager:
                             self._last_block_attempt[s_ip] = now
                             to_block.append((s_ip, pps))
 
-            # 2. Normalização
-            norm_ips = [
+            # Normalização (IPs que pararam de atacar)
+            to_norm = [
                 ip
                 for ip, ls in self._last_seen_attack.items()
                 if (now - ls) > NORMALIZE_SECS
             ]
-            for ip in norm_ips:
+            for ip in to_norm:
                 self._attack_persist.pop(ip, None)
                 self._last_seen_attack.pop(ip, None)
                 self._last_block_attempt.pop(ip, None)
                 self._logged_attacks_engine.discard(ip)
-                to_norm.append(ip)
-
-            for ip, (lbl, conf) in to_log.items():
-                self._logged_attacks_engine.add(ip)
-
-            # 3. Sincroniza tracking de IPs ativos de forma robusta
-            self._get_stale_from_tracking_locked(active_ips)
 
         return ui_results, to_block, to_log, to_norm
+
+    def _evaluate_single_threat(self, src_ip, lr_snap, pps, now):
+        """Lógica interna de persistência por IP."""
+        label, confidence, is_attack = (
+            lr_snap if lr_snap else (DetectionStatus.NORMAL, 0.0, False)
+        )
+        
+        if self.is_whitelisted(src_ip):
+            return DetectionStatus.NORMAL, 0.0, False, False
+
+        if not is_attack:
+            return DetectionStatus.NORMAL, confidence, False, False
+
+        with self._lock:
+            start_time = self._attack_persist.get(src_ip, now)
+        dur = now - start_time
+
+        to_log_now = False
+        if dur >= LEVEL2_SECS:
+            label, is_final = DetectionStatus.ATTACK, True
+            if src_ip not in self._logged_attacks_engine:
+                to_log_now = True
+        elif dur >= LEVEL1_SECS:
+            label, is_final = DetectionStatus.SUSPICIOUS, False
+        else:
+            label, is_final = DetectionStatus.NORMAL, False
+
+        return label, confidence, is_final, to_log_now
 
     # --- Block States Accessors --- #
 

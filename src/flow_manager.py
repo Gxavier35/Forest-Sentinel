@@ -214,6 +214,10 @@ class FlowManager:
                 continue
             pkts_len = len(pkts_snap)
 
+            # Otimização Crítica 🚀: Se não teve atividade nova (is_dirty=False) e já foi analisado, pula.
+            if not is_dirty and la_snap != 0:
+                continue
+
             if (
                 la_snap == 0
                 or (pkts_len - rec.last_analyzed_count) >= 10

@@ -32,10 +32,10 @@ graph TD
 Para suportar redes de **1Gbps+**, o extrator de características foi totalmente reescrito usando operações vetorizadas em C via NumPy, substituindo loops Python lentos.
 
 ### Inovações Técnicas:
-*   **Colheita Unificada (Harvesting)**: Dados brutos de pacotes são convertidos para arrays NumPy em uma única passagem.
-*   **Bitmap Flag Counting**: Contagem de flags TCP (SYN, ACK, PSH) feita em O(N) via operações bitwise sobre colunas de inteiros.
-*   **Logica de Rajada (Bulk)**: Calculada em O(1) usando `np.split` baseada em máscaras temporais, eliminando iteração manual.
+*   **Logica de Rajada (Bulk)**: Calculada em O(1) usando máscaras temporais, eliminando iteração manual.
 *   **Otimização `is_dirty`**: O pipeline de avaliação ignora fluxos sem atividade nova, economizando até 70% de processamento em tráfego de repouso.
+*   **Arquitetura de Ciclo Único**: Avaliação de ameaças e geração de dados para UI ocorrem em um único ciclo O(N), minimizando iterações.
+*   **Predição em Batch Otimizada**: Utiliza `np.vstack` para montagem de matrizes de alta performance no worker de IA.
 
 ---
 
@@ -85,11 +85,17 @@ O sistema utiliza **Isolation Forest** para detecção de anomalias estatística
 2.  **Ataque (Vermelho)**: Anomalia persistente por > 60s.
 3.  **Bloqueio (Firewall)**: IP de origem adicionado ao firewall do SO se a persistência exceder o limite de segurança.
 
-### Classificação de IPs (is_private_ip):
-O sistema possui detecção aprimorada para:
-- **RFC 1918**: 10.x, 172.16.x, 192.168.x.
-- **RFC 6598 (CGNAT)**: 100.64.0.0/10.
 - **IPv6 Local**: ULA (`fc00::`) e Link-local (`fe80::`).
+- **Check Defensivo de Features**: Fallback para vetor zerado em fluxos vazios, prevenindo erros de cálculo.
+
+---
+
+## 🚀 6. Futuro: Roadmap para Motor Nativo (Rust)
+
+Para suportar ambientes de Datacenter (10Gbps+), está planejada a migração para um motor nativo:
+- **Data Plane Híbrido**: Troca dinâmica entre motor Python (Home/PME) e Rust (Datacenter).
+- **Kernel Bypass**: Suporte futuro para XDP (eBPF) no Linux e Npcap Direct no Windows.
+- **Arquitetura Zero-Copy**: Eliminação do overhead do Python GIL no processamento core de pacotes.
 
 ---
 
@@ -101,7 +107,7 @@ O sistema possui detecção aprimorada para:
 *   **Dependências**: `pip install numpy scapy pyqt6 joblib scikit-learn`.
 
 ### Suíte de Testes:
-O projeto inclui 15 testes unitários e de integração:
+O projeto inclui 16 testes unitários e de integração:
 - `pytest tests/test_features.py`: Valida a integridade matemática dos 38 vetores.
 - `pytest tests/test_async_ai.py`: Valida o Watchdog e o IPC.
 - `pytest tests/test_flow.py`: Valida o gerenciador de memória LRU.
