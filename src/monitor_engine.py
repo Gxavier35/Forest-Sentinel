@@ -28,6 +28,8 @@ except ImportError:
 
 from utils import get_root_dir
 from firewall import get_firewall_manager
+from config_manager import DEFAULT_CONFIG
+from i18n import tr
 
 # --- Gerenciadores de Estado --- #
 from constants import DetectionStatus
@@ -106,7 +108,7 @@ class MonitorEngine(QObject):
         list, int, int
     )  # (top_50_results, total_active, total_attacks)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, flow_manager=None, attack_manager=None):
         super().__init__(parent)
         self.model = None
         self.scaler = None
@@ -118,11 +120,7 @@ class MonitorEngine(QObject):
         self._last_pps_chk = time.time()
         self._baseline_pps = 0.0
         self._profile = "home"
-        self._ai_thresholds = {
-            "home": -0.30,
-            "pme": -0.15,
-            "datacenter": 0.00,
-        }
+        self._ai_thresholds = dict(DEFAULT_CONFIG["ai_thresholds"])
         self._zero_traffic_cycles = 0
         self._warned_no_traffic = False
         self._auto_block_enabled = False
@@ -134,7 +132,6 @@ class MonitorEngine(QObject):
         self._ai_lock = threading.Lock()
         # {req_id: (flow_keys, timestamp)}
         self._ai_pending_tasks = {}
-        self._ai_sync_events = {} # {req_id: threading.Event}
         self._ai_collector_thread = None
         self.MAX_AI_IN_FLIGHT = 3
 
@@ -148,8 +145,8 @@ class MonitorEngine(QObject):
         self.logger = logging.getLogger("Engine")
 
         # Injeção de dependência dos Managers
-        self.flow_manager = FlowManager()
-        self.attack_manager = AttackStateManager()
+        self.flow_manager = flow_manager if flow_manager is not None else FlowManager()
+        self.attack_manager = attack_manager if attack_manager is not None else AttackStateManager()
 
         # Fila de firewall para evitar thread explosion
         self._block_queue = queue.Queue()
@@ -227,7 +224,6 @@ class MonitorEngine(QObject):
             return False
 
         self.attack_manager.set_blocking_placeholder(src_ip, pkts_per_sec)
-        self.state_sync.emit(self.attack_manager.get_blocked_snapshot())
 
         if self.firewall.block(src_ip):
             ts = self.attack_manager.confirm_block(src_ip, pkts_per_sec)
@@ -263,9 +259,7 @@ class MonitorEngine(QObject):
         try:
             self.model = joblib.load(MODEL_PATH)
             self.logger.info(f"Modelo carregado: {type(self.model).__name__}")
-            self.status_changed.emit(
-                f"✅ Modelo carregado: {type(self.model).__name__}"
-            )
+            self.status_changed.emit(tr("status_model_loaded", m=type(self.model).__name__))
         except Exception as e:
             self.logger.error(f"Erro ao carregar modelo: {e}")
             self.error_occurred.emit(f"Erro ao carregar modelo: {e}")
@@ -274,7 +268,7 @@ class MonitorEngine(QObject):
         try:
             self.scaler = joblib.load(SCALER_PATH)
             self.logger.info("Scaler carregado.")
-            self.status_changed.emit("✅ Scaler carregado.")
+            self.status_changed.emit(tr("status_scaler_loaded"))
         except Exception as e:
             self.logger.error(f"Erro ao carregar scaler: {e}")
             self.error_occurred.emit(f"Erro ao carregar scaler: {e}")
@@ -300,9 +294,9 @@ class MonitorEngine(QObject):
             self._ai_restart_count = 1
             self._ai_last_restart_time = now
 
-        msg = "📦 Motor de IA: " + ("Reiniciando..." if force else "Iniciando...")
-        self.logger.info(msg)
-        self.status_changed.emit(f"⚙️ {msg}")
+        msg_key = "msg_ai_restarting" if force else "msg_ai_starting"
+        self.logger.info(tr(msg_key))
+        self.status_changed.emit(tr("status_starting", msg=tr(msg_key)))
 
         self._ai_proc = mp.Process(
             target=_ai_inference_worker,
@@ -332,11 +326,8 @@ class MonitorEngine(QObject):
 
                 with self._ai_lock:
                     self._ai_results[resp_id] = (status, data)
-                    # Notifica wait() síncrono se existir
-                    if resp_id in self._ai_sync_events:
-                        self._ai_sync_events[resp_id].set()
-                    # Se não houver ninguém esperando (nem sync nem async), logamos e limpamos para evitar leak
-                    elif resp_id not in self._ai_pending_tasks:
+                    # Se não houver ninguém esperando (async), loga e limpa para evitar leak
+                    if resp_id not in self._ai_pending_tasks:
                         if status == DetectionStatus.ERROR.name:
                             self.logger.error(f"IA: Recebido erro para ID órfão {resp_id}: {data}")
                         self._ai_results.pop(resp_id, None)
@@ -400,7 +391,7 @@ class MonitorEngine(QObject):
             try:
                 self.sniffer = AsyncSniffer(**kwargs)
                 self.sniffer.start()
-                self.status_changed.emit("🔍 Captura iniciada…")
+                self.status_changed.emit(tr("status_capture_started"))
                 self.logger.info(f"Sniffer iniciado em '{iface or 'default'}'")
                 backoff = 2
 
@@ -413,11 +404,11 @@ class MonitorEngine(QObject):
                 # Captura detalhes sobre por que parou se possível
                 stop_reason = "Finalizado pelo usuário" if not self._running else "Falha desconhecida"
                 self.logger.warning(f"Sniffer parou inesperadamente. Motivo: {stop_reason}")
-                self.status_changed.emit("⚠️ Conexão perdida. Reconectando…")
+                self.status_changed.emit(tr("status_connection_lost"))
 
             except Exception as e:
                 self.logger.error(f"Falha ao iniciar sniffer: {e}")
-                self.status_changed.emit(f"⏳ Falha de rede. Tentando em {backoff}s…")
+                self.status_changed.emit(tr("status_network_fail", s=backoff))
 
             if self._running:
                 time.sleep(backoff)
@@ -444,7 +435,7 @@ class MonitorEngine(QObject):
             self._sniffer_thread.join(timeout=2.0)
 
         self.attack_manager.clear_blocked_states()
-        self.status_changed.emit("🛑 Monitoramento interrompido.")
+        self.status_changed.emit(tr("status_monitoring_stopped"))
 
     # --- Loop Central de Análise ---
 
@@ -465,14 +456,12 @@ class MonitorEngine(QObject):
                     self._zero_traffic_cycles += 1
                     if self._zero_traffic_cycles == 10 and not self._warned_no_traffic:
                         self._warned_no_traffic = True
-                        self.status_changed.emit(
-                            "⚠️ Nenhum tráfego detectado. Tente trocar a Interface na aba CONFIG."
-                        )
+                        self.status_changed.emit(tr("status_no_traffic"))
                 else:
                     self._zero_traffic_cycles = 0
                     if self._warned_no_traffic:
                         self._warned_no_traffic = False
-                        self.status_changed.emit("✅ Tráfego de rede detectado.")
+                        self.status_changed.emit(tr("status_traffic_detected"))
 
                 if pps > 0:
                     if self._baseline_pps == 0:
@@ -574,7 +563,7 @@ class MonitorEngine(QObject):
                     return
 
                 req_id = time.time_ns()
-                threshold = self._ai_thresholds.get(self._profile, -0.15)
+                threshold = self._ai_thresholds[self._profile]
                 feats_combined = np.vstack(feats_list)
 
                 self._ai_pending_tasks[req_id] = (keys, time.time())
@@ -604,38 +593,3 @@ class MonitorEngine(QObject):
                     self.logger.error(f"Dessincronização IA assíncrona no ID {rid}")
             else:
                 self.logger.error(f"Erro retornado pelo worker IA (ID {rid}): {data}")
-
-    def _predict_batch(
-        self, feats_list: list[np.ndarray]
-    ) -> list[tuple["DetectionStatus", float, bool]]:
-        """
-        [DEPRECATED/TESTING]: Mantido apenas para compatibilidade de testes unitários 
-        ou chamadas síncronas raras. Para o loop principal de realtime, use _predict_batch_async.
-        """
-        if not feats_list: return []
-        
-        req_id = time.time_ns()
-        ev = threading.Event()
-        
-        try:
-            with self._ai_lock:
-                self._ai_sync_events[req_id] = ev
-            
-            # Submete para o processo de IA
-            self._in_q.put((req_id, np.vstack(feats_list), self._ai_thresholds.get(self._profile, -0.15)))
-            
-            # Espera eficiente sem polling ativo
-            if ev.wait(timeout=5.0):
-                with self._ai_lock:
-                    status, data = self._ai_results.pop(req_id, (DetectionStatus.ERROR.name, []))
-                    self._ai_sync_events.pop(req_id, None)
-                return data if status == "OK" else [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)
-            else:
-                self.logger.warning(f"Timeout na predição síncrona IA (req_id: {req_id})")
-                with self._ai_lock:
-                    self._ai_sync_events.pop(req_id, None)
-                    self._ai_results.pop(req_id, None) # Limpa possível resto para evitar leak
-        except Exception as e:
-            self.logger.error(f"Sync AI prediction error: {e}")
-            
-        return [(DetectionStatus.ERROR, 0.0, False)] * len(feats_list)

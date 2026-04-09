@@ -4,8 +4,6 @@ dashboard.py
 Interface principal do Forest Sentinel.
 """
 
-import sys
-import os
 import logging
 import collections
 import time
@@ -31,7 +29,7 @@ from PyQt6.QtWidgets import (
     QMenu,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QEvent
-from PyQt6.QtGui import QColor, QFont, QBrush, QIcon, QPixmap, QPainter, QAction, QTextCursor
+from PyQt6.QtGui import QColor, QFont, QBrush, QIcon, QPixmap, QAction
 
 # Local Modules
 import i18n
@@ -44,20 +42,18 @@ from utils import (
     RES_FLAG_BR,
     RES_FLAG_US,
     is_admin,
-    format_flow_key,
 )
-from constants import DetectionStatus, FlowResult
+from constants import DetectionStatus
 from ui_components import (
     COLORS,
     MetricCard,
     ActivityChart,
     AlertBanner,
     QSS_BUTTON,
-    QSS_INPUT
 )
 from ui_tabs import OperationTab, ConfigurationTab, BlockedTab, WhitelistTab
 from monitor_engine import MonitorEngine
-from config_manager import load_config, save_config
+from config_manager import load_config, save_config, DEFAULT_CONFIG
 
 _ROOT = get_root_dir()
 
@@ -572,7 +568,7 @@ class MainWindow(QMainWindow):
         # Otimização: Removido save_current_settings por motivo de latência de UI (Save apenas com botão Apply)
 
     def _reset_ai_thresholds(self):
-        defaults = {"home": -0.30, "pme": -0.15, "datacenter": 0.00}
+        defaults = DEFAULT_CONFIG["ai_thresholds"]
         for p_id, val in defaults.items():
             self._engine.set_ai_threshold(p_id, val)
             slider, lbl = self.cfg_tab.ai_controls[p_id]

@@ -268,7 +268,6 @@ class AlertBanner(QFrame):
         self.setProperty("active", False)
         self.setProperty("blink", False)
         self._visible = False
-        self._alpha = 0
         self.hide()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""

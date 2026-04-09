@@ -196,6 +196,19 @@ STRINGS = {
     "log_status_prefix": {"pt": "Status: {msg}",               "en": "Status: {msg}"},
     "log_status_event":  {"pt": "ℹ️ {msg}",                    "en": "ℹ️ {msg}"},
 
+    # ── Monitor Engine ────────────────────────────────────────────────────────
+    "status_model_loaded": {"pt": "✅ Modelo carregado: {m}", "en": "✅ Model loaded: {m}"},
+    "status_scaler_loaded": {"pt": "✅ Scaler carregado.", "en": "✅ Scaler loaded."},
+    "status_starting": {"pt": "⚙️ {msg}", "en": "⚙️ {msg}"},
+    "status_capture_started": {"pt": "🔍 Captura iniciada…", "en": "🔍 Capture started…"},
+    "status_connection_lost": {"pt": "⚠️ Conexão perdida. Reconectando…", "en": "⚠️ Connection lost. Reconnecting…"},
+    "status_network_fail": {"pt": "⏳ Falha de rede. Tentando em {s}s…", "en": "⏳ Network failure. Retrying in {s}s…"},
+    "status_monitoring_stopped": {"pt": "🛑 Monitoramento interrompido.", "en": "🛑 Monitoring stopped."},
+    "status_no_traffic": {"pt": "⚠️ Nenhum tráfego detectado. Tente trocar a Interface na aba CONFIG.", "en": "⚠️ No traffic detected. Try changing the Interface in the CONFIG tab."},
+    "status_traffic_detected": {"pt": "✅ Tráfego de rede detectado.", "en": "✅ Network traffic detected."},
+    "msg_ai_restarting": {"pt": "📦 Motor de IA: Reiniciando...", "en": "📦 AI Engine: Restarting..."},
+    "msg_ai_starting": {"pt": "📦 Motor de IA: Iniciando...", "en": "📦 AI Engine: Starting..."},
+
     # ── AlertBanner ───────────────────────────────────────────────────────────
     "alert_default":     {"pt": "ATAQUE DDOS DETECTADO",        "en": "DDOS ATTACK DETECTED"},
 }

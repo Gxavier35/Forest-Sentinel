@@ -10,7 +10,6 @@ import collections
 import threading
 import logging
 
-import numpy as np
 from constants import (
     MAX_PKTS_FLOW,
     MAX_FLOWS,
@@ -136,7 +135,7 @@ class FlowManager:
                     self._flows[flow_key] = FlowRecord()
 
                 # Adição rápida ao snapshot do fluxo
-                self._flows[flow_key].packets.append({
+                self._flows[flow_key].add({
                     "time": float(pkt.time),
                     "length": len(pkt),
                     "ip_header_len": (ip_layer.ihl * 4 if not is_ipv6 and hasattr(ip_layer, "ihl") else 20),
@@ -144,8 +143,6 @@ class FlowManager:
                     "tcp_window": tcp_window,
                     "direction": direction,
                 })
-                self._flows[flow_key].last_seen = time.time()
-                self._flows[flow_key].is_dirty = True
         except Exception as e:
             self.logger.debug(f"Pkt process error: {e}")
 
