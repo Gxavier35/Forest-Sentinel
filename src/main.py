@@ -11,7 +11,6 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 import multiprocessing
-from config_manager import load_config
 from utils import is_admin, get_root_dir
 
 _ROOT = get_root_dir()

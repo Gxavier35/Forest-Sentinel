@@ -311,11 +311,6 @@ class AttackStateManager:
         with self._lock:
             return dict(self._blocked_status)
 
-    def get_stale_from_tracking(self, active_flow_ips) -> list:
-        """Versão pública com lock fixo."""
-        with self._lock:
-            return self._get_stale_from_tracking_locked(active_flow_ips)
-
     def _get_stale_from_tracking_locked(self, active_flow_ips) -> list:
         """Limpa o tracking de IPs que não possuem mais fluxos ativos (Assume lock adquirido)."""
         # Otimização: Converter para set para busca O(1)

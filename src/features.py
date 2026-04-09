@@ -5,7 +5,6 @@ Calcula as 38 features de fluxo de rede para o modelo DDoS usando NumPy para alt
 """
 
 import numpy as np
-from typing import Dict, Tuple, Optional
 from utils import is_private_ip
 
 def _calculate_bulk_vectorized(times: np.ndarray, lengths: np.ndarray, threshold: float = 0.1) -> tuple[float, float, float]:
